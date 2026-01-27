@@ -17,7 +17,8 @@ dev-agents-v2/
 │   ├── DIR_STRUCTURE.md
 │   ├── WORK_PLAN.md
 │   ├── PROJECT_PROGRESS.md
-│   └── CLEANUP_LOG.md
+│   ├── CLEANUP_LOG.md
+│   └── TASK_CONTEXT_GUIDE.md
 ├── src/                         # Source code (planned; not yet in repo)
 │   ├── api/                     # FastAPI controllers and routes
 │   ├── agents/                  # CrewAI agents and orchestrator logic

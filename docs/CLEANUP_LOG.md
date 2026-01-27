@@ -9,8 +9,8 @@
 
 | 文件 | 原因 | 替代文档 | 删除日期 |
 |------|------|---------|--------|
-| docs/DETAILED_DESIGN.md | 基于旧架构，5026行不符合新设计 | DETAILED_DESIGN_V2.md（待创建） | 2026-01-27 |
-| docs/ARCHITECTURE.md | 基础架构设计已过期 | ARCHITECTURE_V2.md（待创建） | 2026-01-27 |
+| docs/DETAILED_DESIGN.md | 基于旧架构，5026行不符合新设计 | DETAILED_DESIGN_V2.md（已创建） | 2026-01-27 |
+| docs/ARCHITECTURE.md | 基础架构设计已过期 | ARCHITECTURE_V2.md（已创建） | 2026-01-27 |
 | docs/DETAILED_DESIGN_PROGRESS.md | 跟踪旧任务进度，已过期 | PROJECT_COMMAND_CENTER.md + PHASE_1_TASK_BREAKDOWN.md | 2026-01-27 |
 
 ## 保留的文件
@@ -24,6 +24,7 @@
 | docs/API_SPEC.md | ✅ 基础API规范（将在后续阶段扩展） |
 | docs/DIR_STRUCTURE.md | ✅ 目录结构（仍然有参考价值） |
 | docs/WORK_PLAN.md | ✅ 旧工作计划（标记为已过期，作为参考） |
+| docs/TASK_CONTEXT_GUIDE.md | ✅ 任务写作/交付上下文指引 |
 | README.md | ✅ 项目根README（已更新） |
 
 ## 项目演进历程
@@ -33,10 +34,10 @@
 - 特点：基础模块化设计，覆盖CodeAnalyzer、CodeModifier等核心模块
 - 状态：❌ 已删除，被新架构替代
 
-### 第二阶段：新架构设计（当前Phase 1）
+### 第二阶段：新架构设计（Phase 1 已完成）
 - 输出：REQUIREMENTS.md、ARCHITECTURE_V2.md、KNOWLEDGE_SCHEMA.md等
 - 特点：基于CrewAI + LangChain + LangGraph的全新架构
-- 状态：🔄 进行中（任务1-1准备中）
+- 状态：✅ 已完成（任务1-1～1-5全部完成）
 
 ### 第三阶段以后：具体实现（待开始）
 - Phase 2：核心模块实现
@@ -70,4 +71,4 @@
 
 **清理时间**：2026-01-27  
 **清理者**：AI Agent  
-**下一步**：启动任务1-1，生成REQUIREMENTS.md
+**下一步**：开始 Phase 2 核心模块实现
