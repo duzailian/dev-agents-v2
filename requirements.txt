@@ -1,0 +1,30 @@
+# Core Framework
+fastapi==0.111.0
+uvicorn==0.30.1
+pydantic==2.7.4
+pydantic-settings==2.3.4
+
+# Multi-Agent
+pyautogen==0.2.28
+langchain==0.2.5
+openai==1.35.3
+
+# Knowledge Base & Vector DB
+qdrant-client==1.9.1
+sentence-transformers==3.0.1
+torch==2.3.1
+
+# Testing & Execution
+pytest==8.2.2
+pytest-asyncio==0.23.7
+paramiko==3.4.0  # For SSH to boards
+requests==2.32.3 # For Redmine/GitLab APIs
+
+# Analysis
+tree-sitter==0.21.3
+python-magic==0.4.27
+
+# Utilities
+pyyaml==6.0.1
+structlog==24.2.0
+python-dotenv==1.0.1

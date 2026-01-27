@@ -1,0 +1,19 @@
+dev-agents-v2/
+├── docs/                        # Architecture, design, and plan docs
+├── src/                         # Application source code
+│   ├── api/                     # REST/Web API layer
+│   ├── agents/                  # Multi-agent definitions and workflows
+│   ├── executor/                # Testing environment adapters
+│   ├── knowledge/               # RAG and Vector DB management
+│   ├── models/                  # Domain and data models
+│   ├── tools/                   # Agent tool implementations
+│   ├── config/                  # Configuration handlers
+│   └── utils/                   # Shared helpers
+├── tests/                       # Automated tests
+├── scripts/                     # Operational scripts
+├── docker/                      # Containerization files
+├── config/                      # Configuration files
+├── requirements.txt             # Dependency list
+├── README.md                    # Project landing page
+├── setup.py                     # Package setup
+└── structure.txt                # This file

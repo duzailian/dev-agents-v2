@@ -1,0 +1,43 @@
+# Global Configuration
+app_name: "AI-Firmware-Tester"
+debug: true
+
+# LLM Configuration
+llm:
+  model: "gpt-4-turbo-preview"
+  api_key: "YOUR_API_KEY"
+  temperature: 0.1
+  max_tokens: 2000
+
+# Vector Database (Qdrant)
+vector_db:
+  url: "http://localhost:6333"
+  collection_name: "firmware_knowledge"
+  embedding_model: "all-MiniLM-L6-v2"
+
+# Redmine Integration
+redmine:
+  url: "https://redmine.example.com"
+  api_key: "YOUR_REDMINE_KEY"
+  project_id: "firmware-testing"
+
+# GitLab Integration
+gitlab:
+  url: "https://gitlab.example.com"
+  private_token: "YOUR_GITLAB_TOKEN"
+
+# Multi-Product Line
+product_lines:
+  - id: "soc_v1"
+    tags: ["ARM", "Cortex-A53", "RTOS"]
+    kb_weight: 2.0
+  - id: "soc_v2"
+    tags: ["ARM", "Cortex-A72", "Linux"]
+    kb_weight: 1.5
+
+# Test Execution
+execution:
+  default_env: "qemu"
+  qemu_path: "/usr/bin/qemu-system-aarch64"
+  timeout: 300
+  retries: 2
