@@ -1,5 +1,8 @@
 # 生成AI驱动固件智能测试系统工作计划 (WORK_PLAN)
 
+> ⚠️ 注意：本文档为旧工作计划，已过期，仅作参考。当前Phase 1以 docs/PROJECT_COMMAND_CENTER.md 与 docs/PHASE_1_TASK_BREAKDOWN.md 为准。
+
+
 ## 1. 执行总结 (Executive Summary)
 
 本项目旨在开发一个基于生成式AI（LLM）的固件智能测试系统，通过多智能体（Multi-Agent）协作，实现固件代码的自动化分析、修改、测试和结果评估。
