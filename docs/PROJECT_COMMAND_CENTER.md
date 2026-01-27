@@ -100,13 +100,14 @@ API：内网大模型API（优先）
 - 完成时间：2026-01-27（AGENT_DESIGN.md）
 
 ### 任务1-5：工作计划和汇总（WORK_PLAN_V2.md + DETAILED_DESIGN_V2.md）
-- 输出：WORK_PLAN_V2.md、DETAILED_DESIGN_V2.md
+- 输出：WORK_PLAN_V2.md ✅、DETAILED_DESIGN_V2.md
 - 内容：6阶段工作计划、融合详细设计
 - 预计行数：700-800行
+- 完成时间：2026-01-27（WORK_PLAN_V2.md）
 
 ## 📊 当前进度
 
-**总体完成度**：约 60%（已完成任务1-1、1-2、1-3、1-4）
+**总体完成度**：约 65%（已完成任务1-1、1-2、1-3、1-4、WORK_PLAN_V2.md）
 
 ```
 ✅ 已完成：
@@ -117,13 +118,14 @@ API：内网大模型API（优先）
 - 任务1-3：docs/ARCHITECTURE_V2.md（系统架构设计）
 - 任务1-4：docs/AGENT_DESIGN.md（Agent详细设计）
 - 任务1-4：docs/STATE_MACHINE.md（状态机设计）
+- 任务1-5：docs/WORK_PLAN_V2.md（工作计划）
 
 🔄 进行中：
-- Phase 1 架构设计与需求分析（任务1-5：工作计划和融合设计）
+- Phase 1 架构设计与需求分析（任务1-5：融合详细设计）
 
 ⏳ 待开始：
 - Phase 2-6 的所有工作
-- 任务1-5：工作计划和融合设计
+- 任务1-5：DETAILED_DESIGN_V2.md（融合详细设计）
 ```
 
 ## 🔗 关键文档链接
@@ -134,7 +136,7 @@ API：内网大模型API（优先）
 - docs/KNOWLEDGE_SCHEMA.md ✅
 - docs/AGENT_DESIGN.md ✅
 - docs/STATE_MACHINE.md ✅
-- docs/WORK_PLAN_V2.md （待创建）
+- docs/WORK_PLAN_V2.md ✅
 - docs/DETAILED_DESIGN_V2.md （待创建）
 
 **进度追踪**：
@@ -168,6 +170,7 @@ API：内网大模型API（优先）
 | 2026-01-27 | v1.0 | 创建项目指挥部，完成Phase 1任务拆分规划 |
 | 2026-01-27 | v1.1 | 完成任务1-4的AGENT_DESIGN.md，更新进度至50% |
 | 2026-01-27 | v1.2 | 完成任务1-4的STATE_MACHINE.md，更新任务1-1~1-4为✅ |
+| 2026-01-27 | v1.3 | 完成WORK_PLAN_V2.md，更新任务1-5a进度至✅，总体进度至65% |
 
 ---
 
