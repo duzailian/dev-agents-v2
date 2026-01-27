@@ -1,28 +1,13 @@
-# Project Progress Tracking
+# Project Progress Tracking (Archived Snapshot)
 
-## Overall Status
--   **Current Phase**: Phase 0 (Planning & Design)
--   **Completion Percentage**: 5%
+> ⚠️ 本文件为历史快照，内容不再更新。
+> 当前进度与任务安排以 docs/PROJECT_COMMAND_CENTER.md 和 docs/PHASE_2_TASK_BREAKDOWN.md 为准。
 
-## Phase 0: Planning & Design
--   [x] Initial requirements analysis
--   [x] System architecture design
--   [x] Detailed module design
--   [x] Work plan definition
--   [x] Directory structure planning
+## Snapshot Status (2026-01-27)
+- **Current Phase**: Phase 2 (Core Module Implementation) ⏳
+- **Phase 1**: ✅ Completed (requirements, architecture, knowledge schema, agent design, state machine, work plan, detailed design)
+- **Completion Percentage**: 30% (overall, based on Phase 1 completion)
 
-## Phase 1: Foundation
--   [ ] Project structure initialization
--   [ ] Multi-agent framework selection (AutoGen)
--   [ ] Database schema definition
--   [ ] API skeleton
-
-## Known Issues & Constraints
--   LLM context window limits for large firmware codebases.
--   Hardware availability for physical board testing.
--   Need for high-quality historical debugging data for KB.
-
-## Next Steps
-1.  Setup Python development environment.
-2.  Initialize the Git repository and CI/CD pipelines.
-3.  Start implementing the `models` module.
+## Notes
+- Multi-agent framework has been finalized as CrewAI (replacing the early AutoGen placeholder).
+- Phase 2 work has not yet started; see Phase 2 breakdown for task list and acceptance criteria.

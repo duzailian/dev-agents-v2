@@ -38,7 +38,7 @@
 工程实践:
   - 配置管理: Pydantic Settings
   - 日志系统: Structlog
-  - 监控: Prometheus + Grafana
+  - 监控: Prometheus + Grafana（可选/后续阶段）
   - CI/CD: GitLab CI
 ```
 
@@ -53,7 +53,7 @@ graph TB
     subgraph "Layer 7 - 应用层"
         CLI[命令行界面]
         API[RESTful API]
-        WebUI[Web管理界面]
+        WebUI[Web管理界面（可选）]
     end
     
     subgraph "Layer 6 - 编排层"
@@ -86,7 +86,7 @@ graph TB
         Qdrant[Qdrant向量数据库]
         PostgreSQL[PostgreSQL关系数据库]
         FileSystem[文件系统]
-        Cache[Redis缓存]
+        Cache[Redis缓存（可选）]
     end
     
     subgraph "Layer 1 - 基础设施层"
@@ -136,7 +136,7 @@ graph TB
 - **Qdrant向量数据库**：存储知识单元的语义向量，支持高效相似度检索
 - **PostgreSQL关系数据库**：存储结构化元数据，支持复杂关联查询
 - **文件系统**：存储原始文档、代码片段、日志文件等大对象
-- **Redis缓存**：缓存频繁访问的查询结果和中间状态
+- **Redis缓存（可选）**：缓存频繁访问的查询结果和中间状态，不作为闭环强依赖
 
 #### Layer 3 - 抽象层
 - **测试环境抽象**：统一不同测试环境的接口
@@ -147,7 +147,7 @@ graph TB
 - **GitLab服务**：代码仓库访问、MR处理、CI状态获取
 - **Redmine服务**：任务管理、缺陷跟踪、工单处理
 - **大模型服务**：LLM API调用封装，支持多模型切换
-- **存储服务**：文件上传下载、版本管理、备份恢复
+- **存储服务（可选）**：文件上传下载、版本管理、备份恢复（可由文件系统/对象存储替代）
 
 #### Layer 5 - Agent层
 - **CodeAgent**：负责代码分析、修改建议生成、代码实现
@@ -163,7 +163,7 @@ graph TB
 #### Layer 7 - 应用层
 - **命令行界面**：面向开发者的CLI工具
 - **RESTful API**：面向集成的API服务
-- **Web管理界面**：可视化的管理和监控界面
+- **Web管理界面（可选）**：可视化的管理和监控界面（后续阶段）
 
 ---
 
@@ -2150,6 +2150,8 @@ class DataFlowManager:
 ---
 
 ## 8. 与Redmine/GitLab的集成接口
+
+> 说明：Webhook 接入为可选增强能力，相关 REST 入口需在 API_SPEC.md 中同步维护。
 
 ### 8.1 集成架构概览
 
