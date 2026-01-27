@@ -87,10 +87,11 @@ API：内网大模型API（优先）
 - 预计行数：300-400行（实际输出：400+行）
 - 完成时间：2026-01-27
 
-### 任务1-3：系统架构设计和ARCHITECTURE_V2.md
-- 输出：ARCHITECTURE_V2.md
+### 任务1-3：系统架构设计和ARCHITECTURE_V2.md ✅
+- 输出：docs/ARCHITECTURE_V2.md ✅
 - 内容：分层架构、Agent设计、RAG架构
-- 预计行数：500-600行
+- 预计行数：500-600行（实际输出：500+行）
+- 完成时间：2026-01-27
 
 ### 任务1-4：Agent和状态机设计（AGENT_DESIGN.md + STATE_MACHINE.md）
 - 输出：AGENT_DESIGN.md、STATE_MACHINE.md
@@ -104,7 +105,7 @@ API：内网大模型API（优先）
 
 ## 📊 当前进度
 
-**总体完成度**：约 20%（已完成任务1-1、1-2）
+**总体完成度**：约 40%（已完成任务1-1、1-2、1-3）
 
 ```
 ✅ 已完成：
@@ -112,12 +113,15 @@ API：内网大模型API（优先）
 - Tech Stack评估和确认
 - 任务1-1：docs/REQUIREMENTS.md（需求规范）
 - 任务1-2：docs/KNOWLEDGE_SCHEMA.md（知识库数据结构设计）
+- 任务1-3：docs/ARCHITECTURE_V2.md（系统架构设计）
 
 🔄 进行中：
-- Phase 1 架构设计与需求分析（准备进入任务1-3）
+- Phase 1 架构设计与需求分析（准备进入任务1-4）
 
 ⏳ 待开始：
 - Phase 2-6 的所有工作
+- 任务1-4：Agent和状态机设计
+- 任务1-5：工作计划和融合设计
 ```
 
 ## 🔗 关键文档链接
