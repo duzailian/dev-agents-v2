@@ -949,81 +949,1644 @@ class CallFrame:
 
 ---
 
+### 1.5 KnowledgeManager 详细设计
+
+#### 1.5.1 功能概述
+KnowledgeManager 是系统的"智慧大脑"，负责管理和检索历史经验、错误模式和最佳实践。它通过向量化技术将非结构化知识转化为可检索的语义向量，支持 RAG（检索增强生成）模式，为 AI 代理提供精准的上下文支持。
+
+核心功能深度扩展：
+- **知识抽取与建模**：从测试日志、代码注释、文档和专家经验中自动提取结构化知识。
+- **向量化与索引**：支持多种 Embedding 模型，将文本转换为高维向量并建立多级索引。
+- **混合检索策略**：融合向量相似度搜索、关键词匹配和规则过滤，实现精准召回。
+- **知识生命周期管理**：支持知识的创建、更新、版本控制和自动过期清理。
+- **多租户与权限控制**：基于产品线、组件和错误类型进行知识隔离。
+
+#### 1.5.2 知识单元模型详细设计
+
+##### 1. 知识类型体系
+系统支持多种知识类型，每种类型有不同的存储策略和检索权重：
+
+```python
+from enum import Enum
+from dataclasses import dataclass
+from typing import List, Dict, Optional
+from datetime import datetime
+
+class KnowledgeType(Enum):
+    """知识类型枚举"""
+    ERROR_PATTERN = "error_pattern"           # 错误模式：编译错误、运行时错误
+    SOLUTION_EXAMPLE = "solution_example"     # 解决方案：成功修复的案例
+    BEST_PRACTICE = "best_practice"           # 最佳实践：编码规范、设计模式
+    API_REFERENCE = "api_reference"           # API参考：函数接口、使用说明
+    DEBUGGING_GUIDE = "debugging_guide"       # 调试指南：排错流程、工具使用
+    ARCHITECTURE_DECISION = "architecture_decision"  # 架构决策：设计选择及理由
+
+class KnowledgePriority(Enum):
+    """知识优先级枚举"""
+    CRITICAL = 1   # 关键：必须遵守的规则
+    HIGH = 2       # 高：强烈建议遵循
+    MEDIUM = 3     # 中：一般性指导
+    LOW = 4        # 低：参考信息
+
+@dataclass
+class KnowledgeMetadata:
+    """知识元数据"""
+    product_line: str              # 产品线：如 "SoC_A", "SoC_B"
+    component: str                 # 组件：如 "Kernel", "Driver", "Bootloader"
+    error_type: Optional[str]      # 错误类型：如 "NULL_PTR", "MEMORY_LEAK"
+    severity: Optional[str]        # 严重程度：CRITICAL, HIGH, MEDIUM, LOW
+    language: str = "c"            # 编程语言
+    framework: Optional[str] = None # 框架：如 "FreeRTOS", "Zephyr"
+    tags: List[str] = []           # 自定义标签
+    author: str = "system"         # 来源作者
+    confidence_score: float = 0.9  # 置信度：0.0-1.0
+    usage_count: int = 0           # 被检索使用次数
+    last_accessed: Optional[datetime] = None
+
+@dataclass
+class KnowledgeUnit:
+    """知识单元"""
+    id: str                        # 唯一标识
+    type: KnowledgeType            # 知识类型
+    title: str                     # 知识标题
+    content: str                   # 知识正文（Markdown格式）
+    summary: str                   # 摘要（用于快速预览）
+    metadata: KnowledgeMetadata    # 元数据
+    embedding: Optional[List[float]] = None  # 向量表示
+    source_url: Optional[str] = None  # 原始来源链接
+    created_at: datetime = None    # 创建时间
+    updated_at: datetime = None    # 更新时间
+    version: int = 1               # 版本号
+    is_active: bool = True         # 是否激活
+    related_knowledge_ids: List[str] = []  # 关联知识ID
+```
+
+##### 2. 知识内容结构
+每种知识类型有其特定的内容结构：
+
+```python
+@dataclass
+class ErrorPatternKnowledge:
+    """错误模式知识"""
+    base_info: KnowledgeUnit       # 基础信息
+    
+    # 错误模式特有
+    error_signature: str           # 错误签名（用于匹配）
+    regex_pattern: Optional[str]   # 正则匹配模式
+    error_messages: List[str]      # 可能的错误信息列表
+    
+    # 分析信息
+    root_causes: List[str]         # 可能的根本原因列表
+    affected_components: List[str] # 受影响的组件
+    trigger_conditions: List[str]  # 触发条件
+    
+    # 解决方案
+    suggested_fixes: List[str]     # 建议修复方案
+    code_examples: List[str]       # 代码示例
+    references: List[str]          # 参考文档链接
+    
+    # 预防与检测
+    prevention_tips: List[str]     # 预防建议
+    detection_rules: List[str]     # 检测规则
+
+@dataclass
+class SolutionExampleKnowledge:
+    """解决方案知识"""
+    base_info: KnowledgeUnit
+    
+    # 问题描述
+    problem_description: str       # 问题描述
+    error_logs: List[str]         # 相关错误日志
+    
+    # 解决方案
+    modification_type: str         # 修改类型：ADD, MODIFY, DELETE
+    file_path: str                # 修改的文件
+    original_code: str            # 原始代码
+    fixed_code: str               # 修复后代码
+    diff_content: str             # 完整Diff
+    
+    # 验证信息
+    test_cases_passed: List[str]  # 通过的测试用例
+    verification_steps: List[str] # 验证步骤
+    
+    # 效果评估
+    before_metrics: Dict[str, Any] # 修改前指标
+    after_metrics: Dict[str, Any]  # 修改后指标
+    improvement_notes: str         # 改进说明
+```
+
+#### 1.5.3 向量化策略详细设计
+
+##### 1. Embedding 模型选择与配置
+系统支持多种 Embedding 模型，可根据场景灵活选择：
+
+```python
+from abc import ABC, abstractmethod
+
+class EmbeddingStrategy(ABC):
+    """Embedding策略基类"""
+    
+    @abstractmethod
+    def encode(self, text: str) -> List[float]:
+        """将文本编码为向量"""
+        pass
+    
+    @abstractmethod
+    def encode_batch(self, texts: List[str]) -> List[List[float]]:
+        """批量编码"""
+        pass
+    
+    @property
+    @abstractmethod
+    def dimension(self) -> int:
+        """返回向量维度"""
+        pass
+
+class OpenAIEmbeddingStrategy(EmbeddingStrategy):
+    """OpenAI Embedding实现"""
+    
+    def __init__(self, model: str = "text-embedding-3-large", 
+                 api_key: str = None):
+        self.model = model
+        self.dimension = 3076  # text-embedding-3-large 维度
+        self.api_key = api_key
+    
+    async def encode(self, text: str) -> List[float]:
+        """调用OpenAI API进行编码"""
+        import openai
+        response = await openai.AsyncClient(api_key=self.api_key).embeddings.create(
+            model=self.model,
+            input=text,
+            dimensions=self.dimension
+        )
+        return response.data[0].embedding
+    
+    async def encode_batch(self, texts: List[str]) -> List[List[float]]:
+        """批量编码"""
+        import openai
+        response = await openai.AsyncClient(api_key=self.api_key).embeddings.create(
+            model=self.model,
+            input=texts,
+            dimensions=self.dimension
+        )
+        return [item.embedding for item in response.data]
+
+class SentenceBERTEmbeddingStrategy(EmbeddingStrategy):
+    """Sentence-BERT本地Embedding实现"""
+    
+    def __init__(self, model_name: str = "paraphrase-multilingual-mpnet-base-v2"):
+        from sentence_transformers import SentenceTransformer
+        self.model = SentenceTransformer(model_name)
+        self.dimension = 768
+    
+    def encode(self, text: str) -> List[float]:
+        """本地编码"""
+        return self.model.encode(text).tolist()
+    
+    def encode_batch(self, texts: List[str]) -> List[List[float]]:
+        """批量编码"""
+        return self.model.encode(texts).tolist()
+
+class CodeBERTEmbeddingStrategy(EmbeddingStrategy):
+    """CodeBERT代码专用Embedding实现"""
+    
+    def __init__(self, model_name: str = "microsoft/codebert-base"):
+        from transformers import AutoTokenizer, AutoModel
+        import torch
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name)
+        self.dimension = 768
+    
+    async def encode(self, code: str) -> List[float]:
+        """代码编码"""
+        import torch
+        inputs = self.tokenizer(code, return_tensors="pt", 
+                                 max_length=512, truncation=True)
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+        return outputs.last_hidden_state[0][0].tolist()
+```
+
+##### 2. 文本预处理与分块策略
+对于长文本，系统采用智能分块策略：
+
+```python
+class TextChunker:
+    """文本分块器"""
+    
+    def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 200):
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+    
+    def chunk_document(self, text: str, 
+                       metadata: Dict[str, str] = None) -> List[Dict[str, Any]]:
+        """
+        对文档进行智能分块
+        
+        策略：
+        1. 按段落分割，保持语义完整性
+        2. 代码块单独处理，保留缩进和结构
+        3. 保留元数据追溯
+        """
+        chunks = []
+        
+        # 分离代码块和文本
+        code_blocks, plain_text = self._extract_code_blocks(text)
+        
+        # 处理普通文本
+        paragraphs = plain_text.split('\n\n')
+        current_chunk = ""
+        
+        for para in paragraphs:
+            if len(current_chunk) + len(para) < self.chunk_size:
+                current_chunk += para + '\n\n'
+            else:
+                if current_chunk:
+                    chunks.append(self._create_chunk(current_chunk, metadata))
+                current_chunk = para + '\n\n'
+        
+        # 处理代码块
+        for code_block in code_blocks:
+            chunks.append(self._create_chunk(
+                f"```code\n{code_block}\n```",
+                metadata,
+                is_code=True
+            ))
+        
+        if current_chunk:
+            chunks.append(self._create_chunk(current_chunk, metadata))
+        
+        return chunks
+    
+    def _extract_code_blocks(self, text: str) -> tuple:
+        """提取代码块"""
+        import re
+        code_pattern = r'```[\s\S]*?```'
+        code_blocks = re.findall(code_pattern, text)
+        plain_text = re.sub(code_pattern, '[CODE_BLOCK]', text)
+        return code_blocks, plain_text
+    
+    def _create_chunk(self, content: str, metadata: Dict[str, str],
+                      is_code: bool = False) -> Dict[str, Any]:
+        """创建分块"""
+        return {
+            "content": content.strip(),
+            "metadata": {**(metadata or {}), "is_code": is_code},
+            "char_count": len(content),
+            "token_count": len(content) // 4
+        }
+```
+
+##### 3. 向量量化与压缩
+对于大规模知识库，支持向量压缩以节省存储：
+
+```python
+class VectorQuantizer:
+    """向量量化器"""
+    
+    def __init__(self, n_bits: int = 8):
+        self.n_bits = n_bits
+    
+    def quantize(self, vectors: List[List[float]]) -> tuple:
+        """将浮点向量量化为字节"""
+        import numpy as np
+        vectors = np.array(vectors, dtype=np.float32)
+        
+        vmin = vectors.min(axis=0)
+        vmax = vectors.max(axis=0)
+        
+        scale = (vmax - vmin) / (2 ** self.n_bits - 1)
+        quantized = ((vectors - vmin) / scale).round().astype(np.uint8)
+        
+        return quantized.tobytes(), (vmin, vmax, scale)
+    
+    def dequantize(self, quantized_data: bytes, 
+                   params: tuple) -> List[float]:
+        """反量化"""
+        import numpy as np
+        vmin, vmax, scale = params
+        quantized = np.frombuffer(quantized_data, dtype=np.uint8)
+        return ((quantized * scale) + vmin).tolist()
+```
+
+#### 1.5.4 RAG 检索流程详细设计
+
+##### 1. 多阶段检索架构
+系统采用三阶段检索策略，确保高质量召回：
+
+```python
+class HybridRetrievalPipeline:
+    """混合检索流水线"""
+    
+    def __init__(self, vector_store, keyword_store, reranker_model=None):
+        self.vector_store = vector_store      # 向量存储
+        self.keyword_store = keyword_store    # 关键词存储（Elasticsearch）
+        self.reranker = reranker_model        # 重排序模型
+    
+    async def retrieve(self, query: str, 
+                       filters: Dict[str, Any] = None,
+                       top_k: int = 10) -> List:
+        """
+        执行混合检索
+        
+        流程：
+        1. 向量相似度检索（ANN）
+        2. BM25关键词检索
+        3. 结果融合与重排序
+        4. 基于标签的精确过滤
+        """
+        # 第一阶段：并行向量检索和关键词检索
+        vector_results, keyword_results = await asyncio.gather(
+            self._vector_search(query, top_k * 2),
+            self._keyword_search(query, top_k * 2)
+        )
+        
+        # 第二阶段：结果融合
+        fused_results = self._fuse_results(
+            vector_results, 
+            keyword_results,
+            vector_weight=0.6,
+            keyword_weight=0.4
+        )
+        
+        # 第三阶段：重排序
+        if self.reranker and len(fused_results) > top_k:
+            reranked = await self._rerank(query, fused_results[:top_k * 2])
+        else:
+            reranked = fused_results[:top_k * 2]
+        
+        # 第四阶段：精确过滤
+        if filters:
+            filtered = self._apply_filters(reranked, filters)
+        else:
+            filtered = reranked
+        
+        return filtered[:top_k]
+    
+    async def _vector_search(self, query: str, limit: int):
+        """向量相似度搜索"""
+        query_vector = await self.vector_store.encode(query)
+        return await self.vector_store.search(query_vector, limit=limit)
+    
+    async def _keyword_search(self, query: str, limit: int):
+        """关键词搜索（BM25）"""
+        return await self.keyword_store.search(query, limit=limit)
+    
+    def _fuse_results(self, vector_results, keyword_results,
+                      vector_weight, keyword_weight):
+        """融合检索结果"""
+        from collections import defaultdict
+        
+        score_map = defaultdict(float)
+        id_map = {}
+        
+        for result in vector_results:
+            score_map[result.id] += result.score * vector_weight
+            id_map[result.id] = result
+        
+        for result in keyword_results:
+            score_map[result.id] += result.score * keyword_weight
+            id_map[result.id] = result
+        
+        sorted_ids = sorted(score_map.keys(), 
+                           key=lambda x: score_map[x], 
+                           reverse=True)
+        
+        return [{'id': id, 'score': score_map[id], 'data': id_map[id]} 
+                for id in sorted_ids]
+    
+    async def _rerank(self, query, candidates):
+        """重排序"""
+        pairs = [(query, candidate['data'].content) for candidate in candidates]
+        rerank_scores = await self.reranker.predict(pairs)
+        
+        for candidate, score in zip(candidates, rerank_scores):
+            candidate['rerank_score'] = score
+        
+        return sorted(candidates, key=lambda x: x.get('rerank_score', 0), reverse=True)
+```
+
+##### 2. 查询理解与改写
+对用户查询进行增强处理：
+
+```python
+class QueryRewriter:
+    """查询改写器"""
+    
+    def __init__(self, llm_client):
+        self.llm = llm_client
+    
+    async def rewrite(self, original_query: str,
+                      context: Dict[str, Any] = None) -> List[str]:
+        """生成查询改写版本"""
+        rewrites = [original_query]
+        
+        normalized = self._normalize_error_code(original_query)
+        if normalized != original_query:
+            rewrites.append(normalized)
+        
+        synonyms = await self._expand_synonyms(original_query)
+        rewrites.extend(synonyms)
+        
+        technical_terms = self._extract_technical_terms(original_query)
+        for term in technical_terms:
+            rewrites.append(f"{original_query} {term}")
+        
+        return rewrites[:5]
+    
+    def _normalize_error_code(self, query: str) -> str:
+        """规范化错误代码"""
+        import re
+        pattern = r'error\s*#?\s*(\d+)'
+        match = re.search(pattern, query, re.IGNORECASE)
+        if match:
+            return re.sub(pattern, f'ERR_{match.group(1)}', query)
+        return query
+    
+    async def _expand_synonyms(self, query: str) -> List[str]:
+        """扩展同义词"""
+        prompt = f"Generate 3 alternative phrasings for this technical query: {query}"
+        response = await self.llm.complete(prompt)
+        return [line.strip() for line in response.split('\n') if line.strip()]
+    
+    def _extract_technical_terms(self, query: str) -> List[str]:
+        """提取技术术语"""
+        technical_terms = [
+            "memory leak", "null pointer", "stack overflow",
+            "race condition", "deadlock", "buffer overflow"
+        ]
+        return [t for t in technical_terms if t.lower() in query.lower()]
+```
+
+##### 3. 上下文窗口管理
+管理检索结果的上下文窗口：
+
+```python
+class ContextWindowManager:
+    """上下文窗口管理器"""
+    
+    def __init__(self, max_tokens: int = 8000, 
+                 overlap_tokens: int = 500):
+        self.max_tokens = max_tokens
+        self.overlap_tokens = overlap_tokens
+    
+    def build_context(self, retrieved_chunks, query: str) -> str:
+        """构建检索增强上下文"""
+        scored_chunks = self._score_chunks(retrieved_chunks, query)
+        selected = self._select_chunks(scored_chunks)
+        
+        context_parts = []
+        for chunk in selected:
+            relevance_note = f"[相关性: {chunk.relevance_score:.2f}]"
+            context_parts.append(f"{relevance_note}\n{chunk.content}")
+        
+        return "\n\n---\n\n".join(context_parts)
+    
+    def _score_chunks(self, chunks, query: str):
+        """为每个chunk打分"""
+        query_terms = set(query.lower().split())
+        
+        scored = []
+        for chunk in chunks:
+            content_terms = set(chunk.content.lower().split())
+            overlap = len(query_terms & content_terms)
+            score = overlap / max(len(query_terms), 1)
+            scored.append(ScoredChunk(chunk, score))
+        
+        return scored
+    
+    def _select_chunks(self, scored_chunks):
+        """选择不超过token限制的chunk"""
+        selected = []
+        current_tokens = 0
+        
+        for scored in sorted(scored_chunks, key=lambda x: x.score, reverse=True):
+            chunk_tokens = scored.chunk.token_count
+            if current_tokens + chunk_tokens <= self.max_tokens:
+                selected.append(scored.chunk)
+                current_tokens += chunk_tokens
+        
+        return selected
+```
+
+#### 1.5.5 向量数据库设计
+
+##### 1. 存储架构设计
+支持多种向量数据库后端：
+
+```python
+class VectorDatabaseSchema:
+    """向量数据库Schema设计"""
+    
+    # Milvus Collection Schema
+    MILVUS_COLLECTION_SCHEMA = {
+        "collection_name": "agent_knowledge",
+        "description": "AI Agent 知识库向量存储",
+        "enable_dynamic_field": True,
+        "fields": [
+            {"name": "id", "type": "VARCHAR", "is_primary": True, "max_length": 36},
+            {"name": "vector", "type": "FLOAT_VECTOR", "dim": 1536},
+            {"name": "content", "type": "VARCHAR", "max_length": 65535},
+            {"name": "title", "type": "VARCHAR", "max_length": 512},
+            {"name": "knowledge_type", "type": "VARCHAR", "max_length": 32},
+            {"name": "product_line", "type": "VARCHAR", "max_length": 64},
+            {"name": "component", "type": "VARCHAR", "max_length": 64},
+            {"name": "error_type", "type": "VARCHAR", "max_length": 64},
+            {"name": "severity", "type": "VARCHAR", "max_length": 16},
+            {"name": "created_at", "type": "DATETIME"},
+            {"name": "updated_at", "type": "DATETIME"},
+            {"name": "usage_count", "type": "INT64"},
+            {"name": "is_active", "type": "BOOL"}
+        ],
+        "indexes": [
+            {"field_name": "vector", "index_type": "IVF_FLAT", 
+             "params": {"nlist": 1024, "nprobe": 32}},
+            {"field_name": "knowledge_type", "index_type": "STANDARD"},
+            {"field_name": "product_line", "index_type": "STANDARD"},
+            {"field_name": "component", "index_type": "STANDARD"}
+        ]
+    }
+```
+
+##### 2. 分区与分片策略
+针对大规模数据的分区策略：
+
+```python
+class PartitionStrategy:
+    """分区策略"""
+    
+    PRODUCT_LINE_PARTITION = {
+        "strategy": "static",
+        "partitions": ["SoC_A", "SoC_B", "SoC_C", "Common"]
+    }
+    
+    COMPONENT_PARTITION = {
+        "strategy": "static",
+        "partitions": ["Kernel", "Driver", "Bootloader", "Firmware", "Middleware"]
+    }
+    
+    @classmethod
+    def get_partition_key(cls, metadata: KnowledgeMetadata) -> str:
+        """计算分区键"""
+        return f"{metadata.product_line}/{metadata.component}"
+```
+
+##### 3. 索引策略配置
+针对不同查询模式的索引优化：
+
+```python
+class IndexConfiguration:
+    """索引配置"""
+    
+    RETRIEVAL_CONFIG = {
+        "index_type": "IVF_FLAT",
+        "nlist": 1024,
+        "nprobe": 32,
+        "metric_type": "COSINE"
+    }
+    
+    HYBRID_SEARCH_CONFIG = {
+        "index_type": "IVF_PQ",
+        "nlist": 2048,
+        "m": 8,
+        "nbits": 8,
+        "enable_metadata_filtering": True
+    }
+    
+    @classmethod
+    def get_config_for_query(cls, query_type: str) -> Dict:
+        configs = {
+            "semantic_search": cls.RETRIEVAL_CONFIG,
+            "hybrid": cls.HYBRID_SEARCH_CONFIG
+        }
+        return configs.get(query_type, cls.RETRIEVAL_CONFIG)
+```
+
+#### 1.5.6 核心 API 详细定义
+
+```python
+class KnowledgeManager:
+    """
+    KnowledgeManager 负责知识的全生命周期管理，
+    包括知识入库、向量化、检索和版本控制。
+    """
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.vector_store = self._init_vector_store(config['vector_store'])
+        self.embedding_strategy = self._init_embedding_strategy(config['embedding'])
+        self.chunker = TextChunker(
+            chunk_size=config.get('chunk_size', 1000),
+            chunk_overlap=config.get('chunk_overlap', 200)
+        )
+    
+    async def add_knowledge(self, 
+                            content: str,
+                            metadata: KnowledgeMetadata,
+                            knowledge_type: KnowledgeType,
+                            title: str = None) -> str:
+        """
+        添加知识单元
+        
+        流程：
+        1. 内容预处理和分块
+        2. 生成向量表示
+        3. 存储到向量数据库
+        """
+        import uuid
+        from datetime import datetime
+        
+        knowledge_id = str(uuid.uuid4())
+        
+        unit = KnowledgeUnit(
+            id=knowledge_id,
+            type=knowledge_type,
+            title=title or content[:100],
+            content=content,
+            summary=self._generate_summary(content),
+            metadata=metadata,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
+        )
+        
+        chunks = self.chunker.chunk_document(content, {
+            "knowledge_id": knowledge_id,
+            "product_line": metadata.product_line,
+            "component": metadata.component
+        })
+        
+        for i, chunk in enumerate(chunks):
+            chunk_id = f"{knowledge_id}_chunk_{i}"
+            vector = await self.embedding_strategy.encode(chunk['content'])
+            
+            await self.vector_store.upsert(
+                id=chunk_id,
+                vector=vector,
+                payload={**chunk['metadata'], "knowledge_id": knowledge_id}
+            )
+        
+        await self._save_metadata(unit)
+        return knowledge_id
+    
+    async def search_knowledge(self,
+                               query: str,
+                               filters: Dict[str, Any] = None,
+                               knowledge_types: List[KnowledgeType] = None,
+                               top_k: int = 5) -> List[KnowledgeUnit]:
+        """检索知识"""
+        search_filters = filters or {}
+        if knowledge_types:
+            search_filters['knowledge_type'] = [kt.value for kt in knowledge_types]
+        
+        results = await self.retrieval_pipeline.retrieve(
+            query=query,
+            filters=search_filters,
+            top_k=top_k
+        )
+        
+        knowledge_ids = set(r.metadata.get('knowledge_id') for r in results if r.metadata)
+        knowledge_units = []
+        for kid in knowledge_ids:
+            unit = await self._get_knowledge_by_id(kid)
+            if unit:
+                unit.metadata.usage_count += 1
+                knowledge_units.append(unit)
+        
+        return knowledge_units
+    
+    async def update_knowledge(self,
+                               knowledge_id: str,
+                               updates: Dict[str, Any]) -> bool:
+        """更新知识单元"""
+        unit = await self._get_knowledge_by_id(knowledge_id)
+        if not unit:
+            return False
+        
+        if 'content' in updates:
+            unit.content = updates['content']
+            unit.summary = self._generate_summary(updates['content'])
+        if 'title' in updates:
+            unit.title = updates['title']
+        
+        unit.version += 1
+        unit.updated_at = datetime.utcnow()
+        
+        await self._revectorize_knowledge(unit)
+        await self._save_metadata(unit)
+        
+        return True
+    
+    async def delete_knowledge(self, knowledge_id: str) -> bool:
+        """删除知识单元"""
+        await self.vector_store.delete(filter={"knowledge_id": knowledge_id})
+        return await self._delete_metadata(knowledge_id)
+    
+    async def batch_import(self, 
+                           knowledge_list: List[Dict[str, Any]],
+                           parallel: int = 4) -> Dict[str, Any]:
+        """批量导入知识"""
+        import asyncio
+        from collections import Counter
+        
+        results = Counter()
+        semaphore = asyncio.Semaphore(parallel)
+        
+        async def import_one(item):
+            async with semaphore:
+                try:
+                    metadata = KnowledgeMetadata(**item['metadata'])
+                    kid = await self.add_knowledge(
+                        content=item['content'],
+                        metadata=metadata,
+                        knowledge_type=KnowledgeType(item['type']),
+                        title=item.get('title')
+                    )
+                    results['success'] += 1
+                    return kid
+                except Exception as e:
+                    results['failed'] += 1
+                    return None
+        
+        await asyncio.gather(*[import_one(item) for item in knowledge_list])
+        return dict(results)
+```
+
+#### 1.5.7 知识生命周期管理
+
+##### 1. 自动过期清理
+```python
+class KnowledgeLifecycleManager:
+    """知识生命周期管理器"""
+    
+    def __init__(self, knowledge_manager: KnowledgeManager):
+        self.km = knowledge_manager
+        self.config = {
+            "default_ttl_days": 365,
+            "low_confidence_ttl_days": 90,
+            "min_usage_threshold": 5,
+            "cleanup_batch_size": 100
+        }
+    
+    async def cleanup_expired(self) -> Dict[str, int]:
+        """清理过期知识"""
+        expired_ids = await self._find_expired_knowledge()
+        deleted_count = 0
+        for kid in expired_ids[:self.config['cleanup_batch_size']]:
+            await self.km.delete_knowledge(kid)
+            deleted_count += 1
+        return {"deleted": deleted_count}
+    
+    async def archive_low_value(self) -> Dict[str, int]:
+        """归档低价值知识"""
+        low_value_ids = await self._find_low_value_knowledge()
+        archived = 0
+        for kid in low_value_ids:
+            await self._archive_knowledge(kid)
+            archived += 1
+        return {"archived": archived}
+```
+
+---
+
 ## 2. Data Models
 
-### 2.1 Code Modification Record
-```json
-{
-  "record_id": "uuid",
-  "commit_hash": "string",
-  "file_path": "string",
-  "change_diff": "string",
-  "reasoning": "string",
-  "affected_files": ["string"],
-  "validation_status": {
-    "syntax": "PASS/FAIL",
-    "compile": "PASS/FAIL",
-    "lint": "PASS/FAIL",
-    "symbol": "PASS/FAIL",
-    "signature": "PASS/FAIL"
-  },
-  "timestamp": "iso-datetime",
-  "applied": "boolean"
-}
+本节定义了系统的核心数据模型，采用 SQLAlchemy ORM 进行持久化。
+
+### 2.1 SQLAlchemy 模型定义
+
+```python
+from sqlalchemy import (
+    Column, String, Integer, Float, Boolean, DateTime, Text, 
+    ForeignKey, JSON, Index, UniqueConstraint
+)
+from sqlalchemy.orm import relationship, declarative_base
+from sqlalchemy.dialects.postgresql import UUID
+from datetime import datetime
+import uuid
+
+Base = declarative_base()
+
+class TimestampMixin:
+    """时间戳混入类"""
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CodeModificationRecord(Base, TimestampMixin):
+    """
+    代码修改记录表
+    
+    记录所有由AI生成的代码修改，包括修改内容、验证结果和推理过程。
+    """
+    __tablename__ = 'code_modifications'
+    
+    # 主键
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    
+    # 修改基本信息
+    file_path = Column(String(512), nullable=False, index=True)
+    commit_hash = Column(String(40), nullable=True)
+    change_diff = Column(Text, nullable=False)  # Unified Diff 格式
+    
+    # AI 推理信息
+    reasoning = Column(Text, nullable=True)  # AI 修改推理
+    prompt_used = Column(Text, nullable=True)  # 使用的提示词
+    
+    # 影响范围
+    affected_functions = Column(JSON, nullable=True)
+    affected_files = Column(JSON, nullable=True)
+    
+    # 验证状态
+    validation_status = Column(JSON, nullable=False, default=dict)
+    syntax_valid = Column(Boolean, nullable=True)
+    compile_valid = Column(Boolean, nullable=True)
+    lint_valid = Column(Boolean, nullable=True)
+    symbol_valid = Column(Boolean, nullable=True)
+    signature_valid = Column(Boolean, nullable=True)
+    
+    # 元数据
+    applied = Column(Boolean, default=False, nullable=False)
+    applied_at = Column(DateTime, nullable=True)
+    test_session_id = Column(UUID(as_uuid=True), ForeignKey('test_sessions.id'), nullable=True)
+    
+    # 关联关系
+    test_session = relationship("TestSession", back_populates="code_modifications")
+    
+    # 索引
+    __table_args__ = (
+        Index('idx_code_mod_file', 'file_path'),
+        Index('idx_code_mod_commit', 'commit_hash'),
+        Index('idx_code_mod_applied', 'applied'),
+    )
+
+
+class TestExecution(Base, TimestampMixin):
+    """
+    测试执行记录表
+    
+    记录每次测试执行的全量信息，包括环境配置、执行结果和产物。
+    """
+    __tablename__ = 'test_executions'
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    
+    # 测试标识
+    test_name = Column(String(256), nullable=False, index=True)
+    test_suite_name = Column(String(256), nullable=True)
+    test_case_id = Column(String(64), nullable=True)
+    
+    # 环境信息
+    environment_type = Column(String(32), nullable=False)  # qemu, board, bmc, pi
+    environment_config = Column(JSON, nullable=True)
+    
+    # 产品线
+    product_line = Column(String(64), nullable=True, index=True)
+    firmware_version = Column(String(64), nullable=True)
+    
+    # 执行状态
+    status = Column(String(16), nullable=False, default='PENDING')
+    exit_code = Column(Integer, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    
+    # 日志和产物
+    stdout_log = Column(Text, nullable=True)
+    stderr_log = Column(Text, nullable=True)
+    raw_logs = Column(Text, nullable=True)
+    artifact_paths = Column(JSON, nullable=True)
+    coverage_report_path = Column(String(512), nullable=True)
+    
+    # 分析结果
+    error_patterns_found = Column(JSON, nullable=True)
+    root_cause_analysis = Column(Text, nullable=True)
+    suggested_fixes = Column(JSON, nullable=True)
+    
+    # 关联
+    test_session_id = Column(UUID(as_uuid=True), ForeignKey('test_sessions.id'), nullable=True)
+    test_session = relationship("TestSession", back_populates="test_executions")
+    
+    __table_args__ = (
+        Index('idx_test_exec_status', 'status'),
+        Index('idx_test_exec_env', 'environment_type'),
+    )
+
+
+class KnowledgeUnitModel(Base, TimestampMixin):
+    """
+    知识单元模型表
+    
+    存储结构化知识单元，包含元数据和向量化信息。
+    """
+    __tablename__ = 'knowledge_units'
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    
+    # 知识内容
+    title = Column(String(512), nullable=False)
+    content = Column(Text, nullable=False)
+    summary = Column(Text, nullable=True)
+    
+    # 知识类型
+    knowledge_type = Column(String(32), nullable=False, index=True)
+    content_format = Column(String(16), default='markdown')
+    
+    # 元数据
+    metadata = Column(JSON, nullable=False, default=dict)
+    tags = Column(JSON, nullable=True)
+    
+    # 产品线和组件
+    product_line = Column(String(64), nullable=True, index=True)
+    component = Column(String(64), nullable=True, index=True)
+    error_type = Column(String(64), nullable=True, index=True)
+    severity = Column(String(16), nullable=True)
+    
+    # 来源追溯
+    source_url = Column(String(1024), nullable=True)
+    source_type = Column(String(32), nullable=True)
+    author = Column(String(128), nullable=True)
+    
+    # 质量指标
+    confidence_score = Column(Float, default=0.9)
+    usage_count = Column(Integer, default=0)
+    last_accessed_at = Column(DateTime, nullable=True)
+    
+    # 版本控制
+    version = Column(Integer, default=1)
+    parent_id = Column(UUID(as_uuid=True), ForeignKey('knowledge_units.id'), nullable=True)
+    
+    # 状态
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=True)
+    
+    # 关联关系
+    parent = relationship("KnowledgeUnitModel", remote_side=[id], backref="children")
+    
+    __table_args__ = (
+        Index('idx_ku_type_active', 'knowledge_type', 'is_active'),
+        Index('idx_ku_product_component', 'product_line', 'component'),
+    )
+
+
+class IterationRecord(Base, TimestampMixin):
+    """
+    迭代记录表
+    
+    记录一次完整的测试-分析-修改迭代周期的信息。
+    """
+    __tablename__ = 'iterations'
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    
+    # 迭代标识
+    iteration_number = Column(Integer, nullable=False)
+    test_session_id = Column(UUID(as_uuid=True), ForeignKey('test_sessions.id'), nullable=False)
+    
+    # 迭代状态
+    status = Column(String(32), nullable=False, default='RUNNING')
+    start_time = Column(DateTime, default=datetime.utcnow, nullable=False)
+    end_time = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    
+    # 问题描述
+    problem_description = Column(Text, nullable=True)
+    error_analysis = Column(Text, nullable=True)
+    
+    # 修改信息
+    code_modification_id = Column(UUID(as_uuid=True), ForeignKey('code_modifications.id'), nullable=True)
+    code_modification = relationship("CodeModificationRecord")
+    
+    # 测试结果
+    test_before_modification = Column(JSON, nullable=True)
+    test_after_modification = Column(JSON, nullable=True)
+    test_passed = Column(Boolean, nullable=True)
+    
+    # 决策
+    decision = Column(String(32), nullable=True)
+    decision_reason = Column(Text, nullable=True)
+    
+    # 关联
+    test_session = relationship("TestSession", back_populates="iterations")
+    
+    __table_args__ = (
+        Index('idx_iter_session', 'test_session_id'),
+        Index('idx_iter_status', 'status'),
+    )
+
+
+class TestSession(Base, TimestampMixin):
+    """
+    测试会话表
+    
+    记录一次完整的测试会话，包含多个测试执行和迭代。
+    """
+    __tablename__ = 'test_sessions'
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    
+    # 会话标识
+    session_name = Column(String(256), nullable=False)
+    description = Column(Text, nullable=True)
+    
+    # 任务信息
+    task_id = Column(UUID(as_uuid=True), nullable=True)
+    task_type = Column(String(64), nullable=True)
+    
+    # 状态
+    status = Column(String(32), nullable=False, default='CREATED')
+    
+    # 产品线
+    product_line = Column(String(64), nullable=True, index=True)
+    target_version = Column(String(64), nullable=True)
+    
+    # 配置
+    configuration = Column(JSON, nullable=True)
+    
+    # 统计
+    total_iterations = Column(Integer, default=0)
+    passed_tests = Column(Integer, default=0)
+    failed_tests = Column(Integer, default=0)
+    
+    # 结果
+    final_result = Column(String(16), nullable=True)
+    summary = Column(Text, nullable=True)
+    
+    # 关联关系
+    code_modifications = relationship("CodeModificationRecord", back_populates="test_session")
+    test_executions = relationship("TestExecution", back_populates="test_session")
+    iterations = relationship("IterationRecord", back_populates="test_session")
+    
+    __table_args__ = (
+        Index('idx_session_status', 'status'),
+        Index('idx_session_product', 'product_line'),
+    )
 ```
 
-### 2.2 Test Execution Record
-```json
-{
-  "test_id": "string",
-  "environment": {
-    "type": "QEMU/BMC/Board",
-    "config": {
-      "image": "path/to/img",
-      "mem": "512M",
-      "arch": "arm/riscv"
+### 2.2 数据模型关系图
+
+```
+┌─────────────────┐       ┌─────────────────┐
+│   TestSession   │       │  TestExecution  │
+├─────────────────┤       ├─────────────────┤
+│ id (PK)         │◄──────│ id (PK)         │
+│ session_name    │ 1   N │ test_name       │
+│ status          │       │ environment_type│
+│ product_line    │       │ status          │
+│ ...             │       │ test_session_id │──►
+└────────┬────────┘       └─────────────────┘
+         │
+         │ N
+         ▼
+┌─────────────────┐       ┌─────────────────┐
+│   Iteration     │       │CodeModification │
+├─────────────────┤       ├─────────────────┤
+│ id (PK)         │       │ id (PK)         │
+│ iteration_number│       │ file_path       │
+│ status          │       │ change_diff     │
+│ test_session_id │──►    │ validation_status│
+│ code_mod_id     │──►    │ applied         │
+└────────┬────────┘       └─────────────────┘
+         │
+         │
+         ▼
+┌─────────────────┐
+│KnowledgeUnit    │
+├─────────────────┤
+│ id (PK)         │
+│ title           │
+│ content         │
+│ knowledge_type  │
+│ product_line    │
+│ component       │
+│ error_type      │
+│ metadata        │
+└─────────────────┘
+```
+
+### 2.3 数据库索引策略
+
+```python
+INDEX_STRATEGIES = {
+    # 按产品线和错误类型检索知识
+    "knowledge_lookup": {
+        "fields": ["knowledge_type", "product_line", "component", "error_type", "is_active"],
+        "type": "composite"
+    },
+    
+    # 按文件路径查找代码修改
+    "code_mod_lookup": {
+        "fields": ["file_path", "applied", "created_at"],
+        "type": "composite"
+    },
+    
+    # 按状态和时间查询测试执行
+    "test_exec_lookup": {
+        "fields": ["status", "product_line", "created_at"],
+        "type": "composite"
+    },
+    
+    # 按会话查询迭代记录
+    "iteration_lookup": {
+        "fields": ["test_session_id", "iteration_number"],
+        "type": "composite"
     }
-  },
-  "logs": "string",
-  "result": "PASS/FAIL/ERROR",
-  "duration": "float",
-  "coverage_report": "path/to/report",
-  "artifacts": ["path1", "path2"]
-}
-```
-
-### 2.3 Knowledge Unit
-```json
-{
-  "id": "uuid",
-  "type": "Experience/Log/Doc",
-  "tags": {
-    "product_line": "SoC_A",
-    "component": "Kernel",
-    "error_type": "NULL_PTR",
-    "severity": "HIGH"
-  },
-  "content": "string",
-  "vector": [0.1, 0.2, "..."],
-  "source": "Redmine #1234",
-  "created_at": "iso-datetime"
 }
 ```
 
 ## 3. API and Interface Design
 
-### 3.1 Agent Communication
--   **Transport**: Internal message bus (RabbitMQ) or gRPC for high-performance RPC.
--   **Format**: Protocol Buffers or OpenAI-compatible tool call JSON format.
+本节定义了系统的所有外部接口规范，包括 Agent 通信、知识库查询、测试执行等。
+
+### 3.1 Agent Communication Interface
+
+#### 3.1.1 gRPC Service 定义
+
+```protobuf
+syntax = "proto3";
+
+package agent;
+
+// Agent通信服务
+service AgentCommunication {
+    rpc SubmitTask(TaskRequest) returns (TaskResponse);
+    rpc GetTaskStatus(TaskStatusRequest) returns (TaskStatusResponse);
+    rpc StreamLogs(LogRequest) returns (stream LogEntry);
+    rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
+    rpc SendMessage(AgentMessage) returns (AgentMessageResponse);
+}
+
+message TaskRequest {
+    string task_id = 1;
+    string task_type = 2;
+    string description = 3;
+    map<string, string> parameters = 4;
+    string priority = 5;
+    string callback_url = 6;
+}
+
+message TaskResponse {
+    string task_id = 1;
+    string status = 2;
+    string message = 3;
+    int64 estimated_duration_sec = 4;
+}
+
+message TaskStatusRequest { string task_id = 1; }
+
+message TaskStatusResponse {
+    string task_id = 1;
+    string status = 2;
+    float progress = 3;
+    string current_step = 4;
+    map<string, string> metadata = 5;
+}
+
+message LogEntry {
+    string timestamp = 1;
+    string level = 2;
+    string source = 3;
+    string message = 4;
+    map<string, string> context = 5;
+}
+
+message AgentMessage {
+    string message_id = 1;
+    string sender_agent = 2;
+    string receiver_agent = 3;
+    string message_type = 4;
+    bytes payload = 5;
+    string correlation_id = 6;
+}
+```
+
+#### 3.1.2 Function Calling Schema (OpenAI兼容格式)
+
+```python
+FUNCTION_CALLING_SCHEMA = {
+    "name": "agent_coordinator",
+    "description": "AI Agent 协调器工具集",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "code_analyzer": {
+                "type": "object",
+                "description": "代码分析工具",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["parse_file", "extract_functions", 
+                                "calculate_complexity", "find_symbol"],
+                        "description": "分析操作类型"
+                    },
+                    "filepath": {"type": "string", "description": "文件路径"},
+                    "function_name": {"type": "string", "description": "函数名"},
+                    "target_line": {"type": "integer", "description": "目标行号"}
+                },
+                "required": ["action", "filepath"]
+            },
+            "code_modifier": {
+                "type": "object",
+                "description": "代码修改工具",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["suggest_modifications", "apply_patch",
+                                "validate_code", "rollback"],
+                        "description": "修改操作类型"
+                    },
+                    "filepath": {"type": "string", "description": "文件路径"},
+                    "modification": {"type": "string", "description": "修改内容"},
+                    "diff": {"type": "string", "description": "Diff格式"}
+                },
+                "required": ["action", "filepath"]
+            },
+            "test_executor": {
+                "type": "object",
+                "description": "测试执行工具",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["run_test", "run_suite", "get_results"],
+                        "description": "测试操作类型"
+                    },
+                    "test_id": {"type": "string", "description": "测试ID"},
+                    "suite_id": {"type": "string", "description": "测试套件ID"},
+                    "environment": {
+                        "type": "string",
+                        "enum": ["qemu", "board", "bmc", "pi"],
+                        "description": "测试环境"
+                    }
+                },
+                "required": ["action"]
+            },
+            "knowledge_base": {
+                "type": "object",
+                "description": "知识库查询工具",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["search", "add", "update", "delete"],
+                        "description": "知识库操作"
+                    },
+                    "query": {"type": "string", "description": "查询内容"},
+                    "knowledge_type": {
+                        "type": "string",
+                        "enum": ["error_pattern", "solution_example", 
+                                "best_practice", "debugging_guide"],
+                        "description": "知识类型"
+                    },
+                    "top_k": {"type": "integer", "description": "返回数量"}
+                },
+                "required": ["action", "query"]
+            },
+            "result_analyzer": {
+                "type": "object",
+                "description": "结果分析工具",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["parse_logs", "classify_error",
+                                "root_cause_analysis", "extract_pattern"],
+                        "description": "分析操作"
+                    },
+                    "logs": {"type": "string", "description": "日志内容"},
+                    "error_output": {"type": "string", "description": "错误输出"}
+                },
+                "required": ["action"]
+            }
+        }
+    }
+}
+```
 
 ### 3.2 Knowledge Query Interface
-- `query_similar_issues(error_log: str, tags: dict, top_k: int) -> List[KnowledgeUnit]`
-- `add_knowledge_unit(unit: KnowledgeUnit) -> bool`
+
+#### 3.2.1 RESTful API 定义
+
+```python
+KNOWLEDGE_API_SPEC = {
+    "base_path": "/api/v1/knowledge",
+    
+    "endpoints": [
+        {
+            "method": "POST",
+            "path": "/search",
+            "description": "混合检索知识",
+            "request": {
+                "query": {"type": "string", "required": True, "description": "查询文本"},
+                "filters": {
+                    "type": "object",
+                    "properties": {
+                        "knowledge_types": {"type": "array", "items": {"type": "string"}},
+                        "product_line": {"type": "string"},
+                        "component": {"type": "string"},
+                        "error_type": {"type": "string"},
+                        "severity": {"type": "string"}
+                    }
+                },
+                "top_k": {"type": "integer", "default": 5, "maximum": 50},
+                "rerank": {"type": "boolean", "default": True}
+            },
+            "response": {
+                "results": [
+                    {
+                        "id": "string",
+                        "title": "string",
+                        "summary": "string",
+                        "knowledge_type": "string",
+                        "score": "float",
+                        "metadata": "object"
+                    }
+                ],
+                "total_count": "integer",
+                "processing_time_ms": "integer"
+            }
+        },
+        {
+            "method": "POST",
+            "path": "/add",
+            "description": "添加知识单元",
+            "request": {
+                "title": {"type": "string", "required": True},
+                "content": {"type": "string", "required": True},
+                "knowledge_type": {
+                    "type": "string", 
+                    "required": True,
+                    "enum": ["error_pattern", "solution_example", 
+                            "best_practice", "debugging_guide"]
+                },
+                "metadata": {
+                    "type": "object",
+                    "properties": {
+                        "product_line": {"type": "string"},
+                        "component": {"type": "string"},
+                        "error_type": {"type": "string"},
+                        "severity": {"type": "string"},
+                        "tags": {"type": "array", "items": {"type": "string"}}
+                    }
+                },
+                "auto_embed": {"type": "boolean", "default": True}
+            },
+            "response": {"knowledge_id": "string", "status": "string"}
+        },
+        {
+            "method": "GET",
+            "path": "/{knowledge_id}",
+            "description": "获取知识单元详情",
+            "response": {
+                "id": "string", "title": "string", "content": "string",
+                "knowledge_type": "string", "metadata": "object",
+                "created_at": "string", "updated_at": "string", "version": "integer"
+            }
+        },
+        {
+            "method": "PUT",
+            "path": "/{knowledge_id}",
+            "description": "更新知识单元",
+            "request": {"title": {"type": "string"}, "content": {"type": "string"}, "metadata": {"type": "object"}},
+            "response": {"status": "string"}
+        },
+        {
+            "method": "DELETE",
+            "path": "/{knowledge_id}",
+            "description": "删除知识单元",
+            "response": {"status": "string"}
+        },
+        {
+            "method": "GET",
+            "path": "/stats",
+            "description": "获取知识库统计",
+            "response": {"total_units": "integer", "by_type": "object", "by_product_line": "object", "storage_size_mb": "number"}
+        }
+    ]
+}
+```
 
 ### 3.3 Test Execution Interface
-- `run_suite(suite_id: str, env_profile: str) -> JobID`
-- `cancel_job(job_id: str) -> bool`
-- `get_job_logs(job_id: str) -> str`
+
+```python
+TEST_EXECUTION_API_SPEC = {
+    "base_path": "/api/v1/tests",
+    
+    "endpoints": [
+        {
+            "method": "POST",
+            "path": "/run",
+            "description": "提交测试任务",
+            "request": {
+                "test_type": {"type": "string", "required": True, "enum": ["unit", "integration", "system", "stress"]},
+                "test_spec": {
+                    "type": "object",
+                    "properties": {
+                        "test_id": {"type": "string"},
+                        "suite_id": {"type": "string"},
+                        "script_path": {"type": "string"},
+                        "parameters": {"type": "object"}
+                    }
+                },
+                "environment": {"type": "string", "required": True, "enum": ["qemu", "board", "bmc", "pi", "windows"]},
+                "environment_config": {"type": "object"},
+                "priority": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL"], "default": "MEDIUM"},
+                "timeout_seconds": {"type": "integer", "default": 300},
+                "callback_url": {"type": "string"}
+            },
+            "response": {"job_id": "string", "status": "string", "estimated_duration": "integer"}
+        },
+        {
+            "method": "GET",
+            "path": "/{job_id}/status",
+            "description": "获取任务状态",
+            "response": {"job_id": "string", "status": "string", "progress": "number", "current_step": "string"}
+        },
+        {
+            "method": "GET",
+            "path": "/{job_id}/logs",
+            "description": "获取实时日志",
+            "query_params": {"stream": {"type": "boolean", "default": False}, "tail": {"type": "integer"}, "level": {"type": "string"}}
+        },
+        {
+            "method": "GET",
+            "path": "/{job_id}/results",
+            "description": "获取测试结果",
+            "response": {"job_id": "string", "status": "string", "result": "object", "exit_code": "integer", "duration_seconds": "number"}
+        },
+        {
+            "method": "POST",
+            "path": "/{job_id}/cancel",
+            "description": "取消测试任务",
+            "response": {"status": "string"}
+        },
+        {
+            "method": "POST",
+            "path": "/{job_id}/retry",
+            "description": "重试测试任务",
+            "request": {"max_attempts": {"type": "integer"}, "override_config": {"type": "object"}},
+            "response": {"new_job_id": "string", "status": "string"}
+        }
+    ]
+}
+```
+
+### 3.4 Code Validation Interface
+
+```python
+CODE_VALIDATION_API_SPEC = {
+    "base_path": "/api/v1/validate",
+    
+    "endpoints": [
+        {
+            "method": "POST",
+            "path": "/syntax",
+            "description": "语法验证",
+            "request": {
+                "code": {"type": "string", "required": True},
+                "language": {"type": "string", "default": "c"},
+                "includes": {"type": "array", "items": {"type": "string"}}
+            },
+            "response": {"valid": "boolean", "errors": "array", "warnings": "array", "ast": "object"}
+        },
+        {
+            "method": "POST",
+            "path": "/compile",
+            "description": "编译验证",
+            "request": {
+                "code": {"type": "string", "required": True},
+                "file_path": {"type": "string", "required": True},
+                "compiler": {"type": "string", "default": "gcc"},
+                "flags": {"type": "array", "items": {"type": "string"}},
+                "target_platform": {"type": "string"}
+            },
+            "response": {"success": "boolean", "output": "string", "error_output": "string", "exit_code": "integer"}
+        },
+        {
+            "method": "POST",
+            "path": "/patch",
+            "description": "补丁验证",
+            "request": {
+                "original_code": {"type": "string", "required": True},
+                "patched_code": {"type": "string", "required": True},
+                "diff": {"type": "string"},
+                "check_functions": {"type": "boolean", "default": True}
+            },
+            "response": {"valid": "boolean", "changes": "array", "syntax_changes": "array", "semantic_changes": "array", "risk_level": "string"}
+        }
+    ]
+}
+```
+
+### 3.5 Agent Coordination Interface
+
+```python
+AGENT_COORDINATION_API_SPEC = {
+    "base_path": "/api/v1/coordination",
+    
+    "endpoints": [
+        {
+            "method": "POST",
+            "path": "/delegate",
+            "description": "委派任务给Agent",
+            "request": {
+                "target_agent": {"type": "string", "required": True, "enum": ["code_agent", "test_agent", "analysis_agent", "decision_agent"]},
+                "task_type": {"type": "string", "required": True},
+                "task_payload": {"type": "object", "required": True},
+                "priority": {"type": "string", "default": "MEDIUM"},
+                "timeout_seconds": {"type": "integer"},
+                "callback_on_complete": {"type": "boolean"}
+            },
+            "response": {"delegation_id": "string", "status": "string", "estimated_completion": "string"}
+        },
+        {
+            "method": "GET",
+            "path": "/agents/status",
+            "description": "获取所有Agent状态",
+            "response": {
+                "agents": [
+                    {"name": "string", "status": "string", "current_tasks": "integer", "load": "number", "last_heartbeat": "string"}
+                ]
+            }
+        },
+        {
+            "method": "POST",
+            "path": "/sync",
+            "description": "同步Agent状态",
+            "request": {"agent_states": "array", "sync_type": {"type": "string", "enum": ["full", "incremental", "conflict_resolution"]}},
+            "response": {"synced": "boolean", "conflicts": "array", "resolution": "object"}
+        },
+        {
+            "method": "GET",
+            "path": "/workflow/{workflow_id}",
+            "description": "获取工作流状态",
+            "response": {"workflow_id": "string", "status": "string", "current_stage": "string", "stages": "array", "results": "object"}
+        }
+    ]
+}
+```
+
+### 3.6 错误码定义
+
+```python
+ERROR_CODES = {
+    # 通用错误 (1xxx)
+    1000: {"message": "成功", "http_status": 200},
+    1001: {"message": "未知错误", "http_status": 500},
+    1002: {"message": "参数无效", "http_status": 400},
+    1003: {"message": "资源不存在", "http_status": 404},
+    1004: {"message": "资源冲突", "http_status": 409},
+    1005: {"message": "权限不足", "http_status": 403},
+    1006: {"message": "请求超时", "http_status": 408},
+    
+    # 测试执行错误 (2xxx)
+    2001: {"message": "测试环境不可用", "http_status": 503},
+    2002: {"message": "测试超时", "http_status": 408},
+    2003: {"message": "测试脚本执行失败", "http_status": 500},
+    2004: {"message": "测试产物不存在", "http_status": 404},
+    
+    # 代码修改错误 (3xxx)
+    3001: {"message": "代码语法错误", "http_status": 400},
+    3002: {"message": "编译失败", "http_status": 400},
+    3003: {"message": "符号未定义", "http_status": 400},
+    3004: {"message": "补丁应用失败", "http_status": 500},
+    3005: {"message": "回滚失败", "http_status": 500},
+    
+    # 知识库错误 (4xxx)
+    4001: {"message": "知识单元创建失败", "http_status": 500},
+    4002: {"message": "向量生成失败", "http_status": 500},
+    4003: {"message": "检索失败", "http_status": 500},
+    4004: {"message": "知识库连接失败", "http_status": 503},
+    
+    # Agent协调错误 (5xxx)
+    5001: {"message": "Agent不可用", "http_status": 503},
+    5002: {"message": "任务委派失败", "http_status": 500},
+    5003: {"message": "状态同步冲突", "http_status": 409},
+    5004: {"message": "工作流执行失败", "http_status": 500}
+}
+```
+
+### 3.7 认证和限流
+
+```python
+AUTH_AND_RATE_LIMITS = {
+    "authentication": {
+        "methods": ["API Key", "OAuth2", "JWT"],
+        "api_key_header": "X-API-Key",
+        "jwt_header": "Authorization",
+        "token_expiry_hours": 24
+    },
+    
+    "rate_limits": {
+        "knowledge_search": {"requests_per_minute": 60},
+        "knowledge_add": {"requests_per_minute": 20},
+        "test_run": {"requests_per_minute": 10},
+        "test_status": {"requests_per_minute": 120},
+        "code_validation": {"requests_per_minute": 30},
+        "agent_coordination": {"requests_per_minute": 50}
+    },
+    
+    "burst_limits": {
+        "default_burst": 10,
+        "knowledge_search_burst": 20,
+        "test_status_burst": 30
+    }
+}
+```
 
 ## 4. 配置和策略详化
 
