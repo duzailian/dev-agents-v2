@@ -10,6 +10,16 @@
 
 ---
 
+## 0. Phase 2 MVP 边界说明
+
+为避免范围膨胀，Phase 2 仅实现“闭环最小可用链路”，其余能力作为后续阶段增强：
+
+- **Phase 2 必做**：CodeAnalyzer、CodeModifier、TestOrchestrator、ResultAnalyzer 的最小闭环；CLI 最小入口；基础日志与配置。
+- **Phase 2 延后**：Webhook 集成、WebUI、监控告警、缓存加速、完整 RBAC/多租户支持。
+- **可选依赖**：Redis 缓存、对象存储/存储服务，仅在明确需求与验收后引入。
+
+---
+
 ## 1. 核心模块详细设计
 
 ### 1.1 CodeAnalyzer（代码分析器）
@@ -1633,7 +1643,7 @@ class StartupStrategy:
             # 1. 初始化数据库
             await self._init_database()
             
-            # 2. 初始化Redis
+            # 2. 初始化Redis（可选：仅在启用缓存加速时）
             await self._init_redis()
             
             # 3. 初始化Qdrant
