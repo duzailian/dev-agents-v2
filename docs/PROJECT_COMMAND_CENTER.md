@@ -81,10 +81,11 @@ API：内网大模型API（优先）
 - 内容：18点需求的详细规范（含验收条件/优先级/追溯）
 - 预计行数：400-500行（已完成：约480行）
 
-### 任务1-2：知识库Schema设计和KNOWLEDGE_SCHEMA.md
-- 输出：KNOWLEDGE_SCHEMA.md
-- 内容：数据结构、Qdrant配置、PostgreSQL schema
-- 预计行数：300-400行
+### 任务1-2：知识库Schema设计和KNOWLEDGE_SCHEMA.md ✅
+- 输出：docs/KNOWLEDGE_SCHEMA.md ✅
+- 内容：KnowledgeUnit数据模型、产品线标签、Qdrant配置、PostgreSQL schema、查询示例
+- 预计行数：300-400行（实际输出：400+行）
+- 完成时间：2026-01-27
 
 ### 任务1-3：系统架构设计和ARCHITECTURE_V2.md
 - 输出：ARCHITECTURE_V2.md
@@ -103,16 +104,17 @@ API：内网大模型API（优先）
 
 ## 📊 当前进度
 
-**总体完成度**：约 10%（已完成任务1-1）
+**总体完成度**：约 20%（已完成任务1-1、1-2）
 
 ```
 ✅ 已完成：
 - 项目规划和需求澄清
 - Tech Stack评估和确认
 - 任务1-1：docs/REQUIREMENTS.md（需求规范）
+- 任务1-2：docs/KNOWLEDGE_SCHEMA.md（知识库数据结构设计）
 
 🔄 进行中：
-- Phase 1 架构设计与需求分析（准备进入任务1-2）
+- Phase 1 架构设计与需求分析（准备进入任务1-3）
 
 ⏳ 待开始：
 - Phase 2-6 的所有工作
@@ -163,4 +165,4 @@ API：内网大模型API（优先）
 
 **最后更新**：2026-01-27  
 **维护者**：AI Agent  
-**下次更新时间**：完成任务1-2后
+**下次更新时间**：完成任务1-3后
