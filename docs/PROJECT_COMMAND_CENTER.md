@@ -77,9 +77,9 @@ API：内网大模型API（优先）
 由于任务太大导致无法自动执行，拆分为以下小任务：
 
 ### 任务1-1：需求分析和REQUIREMENTS.md
-- 输出：REQUIREMENTS.md
-- 内容：18点需求的详细规范
-- 预计行数：400-500行
+- 输出：docs/REQUIREMENTS.md ✅
+- 内容：18点需求的详细规范（含验收条件/优先级/追溯）
+- 预计行数：400-500行（已完成：约480行）
 
 ### 任务1-2：知识库Schema设计和KNOWLEDGE_SCHEMA.md
 - 输出：KNOWLEDGE_SCHEMA.md
@@ -103,15 +103,16 @@ API：内网大模型API（优先）
 
 ## 📊 当前进度
 
-**总体完成度**：约 5%（刚开始Phase 1）
+**总体完成度**：约 10%（已完成任务1-1）
 
 ```
 ✅ 已完成：
 - 项目规划和需求澄清
 - Tech Stack评估和确认
+- 任务1-1：docs/REQUIREMENTS.md（需求规范）
 
 🔄 进行中：
-- Phase 1 架构设计与需求分析（任务拆分中）
+- Phase 1 架构设计与需求分析（准备进入任务1-2）
 
 ⏳ 待开始：
 - Phase 2-6 的所有工作
@@ -121,7 +122,7 @@ API：内网大模型API（优先）
 
 **项目文档**：
 - docs/ARCHITECTURE_V2.md （待创建）
-- docs/REQUIREMENTS.md （待创建）
+- docs/REQUIREMENTS.md ✅
 - docs/KNOWLEDGE_SCHEMA.md （待创建）
 - docs/AGENT_DESIGN.md （待创建）
 - docs/STATE_MACHINE.md （待创建）
@@ -162,4 +163,4 @@ API：内网大模型API（优先）
 
 **最后更新**：2026-01-27  
 **维护者**：AI Agent  
-**下次更新时间**：完成任务1-1后
+**下次更新时间**：完成任务1-2后
