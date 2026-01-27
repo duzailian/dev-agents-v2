@@ -3,57 +3,42 @@
 ## Table of Contents
 1. [Core Modules Detailed Design](#1-core-modules-detailed-design)
     1.1 [CodeAnalyzer 详细设计](#11-codeanalyzer-详细设计)
-        1.1.1 [功能概述](#111-功能概述)
-        1.1.2 [实现细节深度解析](#112-实现细节深度解析)
-        1.1.3 [核心 API 规范定义](#113-核心-api-规范定义)
-        1.1.4 [核心数据结构详解](#114-核心数据结构详解)
-        1.1.5 [符号表管理策略深度说明](#115-符号表管理策略深度说明)
-        1.1.6 [圈复杂度计算详细算法](#116-圈复杂度计算详细算法)
-        1.1.7 [实现备注与限制](#117-实现备注与限制)
     1.2 [CodeModifier 详细设计](#12-codemodifier-详细设计)
-        1.2.1 [功能概述](#121-功能概述)
-        1.2.2 [修改建议生成流程详细说明](#122-修改建议生成流程详细说明)
-        1.2.3 [验证和安全检查机制详细说明](#123-验证和安全检查机制详细说明)
-        1.2.4 [代码补丁生成详细说明](#124-代码补丁生成详细说明)
-        1.2.5 [补丁冲突解决策略](#125-补丁冲突解决策略)
-        1.2.6 [修改历史管理详细说明](#126-修改历史管理详细说明)
-        1.2.7 [核心 API 详细定义](#127-核心-api-详细定义)
-        1.2.8 [核心数据结构详解](#128-核心数据结构详解)
-        1.2.9 [验证逻辑深度说明](#129-验证逻辑深度说明)
-        1.2.10 [异常处理与边缘情况](#1210-异常处理与边缘情况)
     1.3 [TestOrchestrator 详细设计](#13-testorchestrator-详细设计)
-        1.3.1 [功能概述](#131-功能概述)
-        1.3.2 [多环境测试执行流程详细说明](#132-多环境测试执行流程详细说明)
-        1.3.3 [环境抽象层设计详细说明](#133-环境抽象层设计详细说明)
-        1.3.4 [测试配置管理详细说明](#134-测试配置管理详细说明)
-        1.3.5 [日志采集和标准化详细说明](#135-日志采集和标准化详细说明)
-        1.3.6 [测试结果格式标准化](#136-测试结果格式标准化)
-        1.3.7 [核心 API 详细定义](#137-核心-api-详细定义)
     1.4 [ResultAnalyzer 详细设计](#14-resultanalyzer-详细设计)
-        1.4.1 [功能概述](#141-功能概述)
-        1.4.2 [日志解析规则引擎详细说明](#142-日志解析规则引擎详细说明)
-        1.4.3 [错误分类系统详细说明](#143-错误分类系统详细说明)
-        1.4.4 [根因分析详细说明](#144-根因分析详细说明)
-        1.4.5 [经验知识提取详细说明](#145-经验知识提取详细说明)
-        1.4.6 [核心 API 详细定义](#146-核心-api-详细定义)
-        1.4.7 [数据结构详细定义](#147-数据结构详细定义)
-        1.4.8 [设计决策补充](#148-设计决策补充)
+    1.5 [KnowledgeManager 详细设计](#15-knowledgemanager-详细设计)
 2. [Data Models](#2-data-models)
-    2.1 [Code Modification Record](#21-code-modification-record)
-    2.2 [Test Execution Record](#22-test-execution-record)
-    2.3 [Knowledge Unit](#23-knowledge-unit)
+    2.1 [SQLAlchemy 模型定义](#21-sqlalchemy-模型定义)
+    2.4 [数据一致性和事务设计](#24-数据一致性和事务设计)
+    2.5 [数据索引详细策略](#25-数据索引详细策略)
+    2.6 [数据备份和恢复策略](#26-数据备份和恢复策略)
+    2.7 [数据迁移指南](#27-数据迁移指南)
 3. [API and Interface Design](#3-api-and-interface-design)
-    3.1 [Agent Communication](#31-agent-communication)
-    3.2 [Knowledge Query Interface](#32-knowledge-query-interface)
-    3.3 [Test Execution Interface](#33-test-execution-interface)
-4. [Configuration and Strategies](#4-configuration-and-strategies)
-    4.1 [Agent Configuration](#41-agent-configuration)
-    4.2 [Retrieval Strategy](#42-retrieval-strategy)
-5. [Security and Reliability](#5-security-and-reliability)
-    5.1 [Sandbox Execution](#51-sandbox-execution)
-    5.2 [Code Integrity](#52-code-integrity)
-6. [Conclusion](#6-conclusion)
-
+    3.8 [SDK 和客户端库设计](#38-sdk-和客户端库设计)
+    3.9 [API 版本控制和兼容性](#39-api-版本控制和兼容性)
+    3.10 [API 集成测试框架](#310-api-集成测试框架)
+4. [配置和策略详化](#4-配置和策略详化)
+    4.3 [LLM 模型配置和切换策略](#43-llm-模型配置和切换策略)
+    4.4 [向量模型配置](#44-向量模型配置)
+    4.5 [参数调优指南](#45-参数调优指南)
+5. [工作流和流程设计详化](#5-工作流和流程设计详化)
+6. [错误处理和异常恢复](#6-错误处理和异常恢复)
+    6.5 [分布式事务管理](#65-分布式事务管理)
+    6.6 [幂等性实现详解](#66-幂等性实现详解)
+    6.7 [重试和退避策略的详细算法](#67-重试和退避策略的详细算法)
+7. [性能和可扩展性设计](#7-性能和可扩展性设计)
+    7.5 [性能测试和基准设计](#75-性能测试和基准设计)
+    7.6 [压力测试场景和预期结果](#76-压力测试场景和预期结果)
+    7.7 [容量规划指南](#77-容量规划指南)
+    7.8 [成本优化策略](#78-成本优化策略)
+8. [监控和可观测性设计](#8-监控和可观测性设计)
+    8.5 [健康检查和自诊断](#85-健康检查和自诊断)
+    8.6 [可视化仪表盘设计](#86-可视化仪表盘设计)
+    8.7 [日志分析和趋势预测](#87-日志分析和趋势预测)
+9. [部署与运维设计](#9-部署与运维设计)
+10. [最佳实践和集成指南](#10-最佳实践和集成指南)
+11. [附录](#11-附录)
+12. [总结](#12-总结)
 ## 1. Core Modules Detailed Design
 
 ### 1.1 CodeAnalyzer 详细设计
@@ -1269,6 +1254,215 @@ class VectorQuantizer:
         return ((quantized * scale) + vmin).tolist()
 ```
 
+
+
+#### 1.5.3 向量化策略详细说明
+
+stty cols 500 rows 24; kill -WINCH $$; stty -Embedding）策略决定了 KnowledgeManager 的“语义理解上限”。本节从 **模型选择 → 维度与距离度量 → 预处理与分块 → 批处理与一致性** 四个层面展开，并给出可运行的 Python 参考实现。
+
+##### 1. Embeddings 模型选择
+
+| 方案 | 推荐模型示例 | 维度 | 优点 | 缺点 | 适用场景 |
+|---|---:|---:|---|---|---|
+| 云端通用 | OpenAI `text-embedding-3-large` | 3072（可下采样/配置） | 语义质量高、覆盖面广 | 成本/合规 | 通用检索、跨领域知识 |
+| 云端性价比 | OpenAI `text-embedding-3-small` | 1536 | 成本较低 | 语义能力略弱 | 大规模知识、成本敏感 |
+| 本地开源 | `bge-large-zh` / `e5-large-v2` | 1024/768 | 可离线、可私有化 | 需部署 GPU/CPU 推理 | 内网部署/合规严格 |
+| 代码/多模态 | `bge-code`/`code-search` | 768~1024 | 代码检索更强 | 对纯自然语言略弱 | 代码片段/patch 检索 |
+
+**设计决策**：
+- 默认以 1536 维为主（与文档中 Milvus schema 保持一致），便于工程落地；
+- 若选择 3072 维，必须同步调整向量库 collection/schema，以及 cache key 版本（见 1.5.8）。
+
+##### 2. 向量维度、距离度量与归一化
+
+- 距离度量：推荐 **Cosine**（对长度不敏感）；若使用 Inner Product，需要先 L2 normalize。
+- 归一化：
+  - 若 embedding 模型输出已归一化，可不处理；
+  - 否则统一做 `x / ||x||2`，避免不同批次尺度漂移。
+
+**时间复杂度**：归一化对每个向量 O(d)。
+
+##### 3. 预处理算法（文本清洗 + 结构保持）
+
+stty cols 500 rows 24; kill -WINCH $$; stty - dump、代码块、宏定义。预处理的目标是：
+- 保留“可检索信号”（错误码、函数名、地址模式、关键日志 token）
+- 去除“噪音”（重复时间戳、无意义 padding、超长十六进制块）
+
+**关键规则**：
+1) **标准化时间戳**（保留占位符 `<TS>`）；
+2) **标准化地址/指针**（`0x7ff...` → `<ADDR>`）；
+3) **去重连续重复行**（常见于串口刷屏）；
+4) **截断超长十六进制**（例如超过 N 字符的 hexdump 只保留前后窗口）；
+5) **代码块保留 fence**（避免 markdown 结构丢失）。
+
+stty cols 500 rows 24; kill -WINCH $$; stty -echo
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Iterable, List
+import re
+
+
+_TS = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?")
+_ADDR = re.compile(r"0x[0-9a-fA-F]{6,}")
+_HEXDUMP_LINE = re.compile(r"^(?:[0-9a-fA-F]{2}\s+){8,}.*$")
+
+
+@dataclass(frozen=True)
+class PreprocessConfig:
+    max_hex_line_len: int = 200
+    max_repeated_lines: int = 3
+
+
+def preprocess_text(text: str, cfg: PreprocessConfig = PreprocessConfig()) -> str:
+    # 1) normalize
+    text = _TS.sub("<TS>", text)
+    text = _ADDR.sub("<ADDR>", text)
+
+    # 2) line-level cleanup
+    out: List[str] = []
+    last_line: str | None = None
+    repeat = 0
+
+    for raw in text.splitlines():
+        line = raw.rstrip("
+")
+
+        # trim very long hexdump lines
+        if _HEXDUMP_LINE.match(line) and len(line) > cfg.max_hex_line_len:
+            line = line[:80] + " ... " + line[-40:]
+
+        if last_line == line:
+            repeat += 1
+            if repeat > cfg.max_repeated_lines:
+                continue
+        else:
+            repeat = 1
+            last_line = line
+
+        out.append(line)
+
+    return "
+".join(out).strip() + "
+"
+```
+
+##### 4. 分块（Chunking）与“知识单元 → chunk”映射
+
+- 默认 chunk：`chunk_size=1000 chars`、`chunk_overlap=200 chars`（与现有实现一致）
+- 对代码块：单独 chunk（避免代码被截断导致 embedding 语义漂移）
+
+**伪代码（chunking with overlap）**：
+
+```text
+Input: document_text, chunk_size, overlap
+Output: chunks[]
+
+1. chunks = []
+2. i = 0
+3. while i < len(document_text):
+4.    end = min(i + chunk_size, len(document_text))
+5.    chunks.append(document_text[i:end])
+6.    if end == len(document_text): break
+7.    i = max(0, end - overlap)
+
+Time: O(n)
+Space: O(n)
+```
+
+##### 5. 批处理与一致性（Embedding Pipeline）
+
+- 为避免外部 embedding 服务的速率限制，必须支持 **batch + 并发控制 + 重试**。
+- 设计目标：
+  - 支持 `batch_size`（例如 16/32）
+  - 支持 `max_concurrency`（例如 4）
+  - 支持 `idempotency_key`（确保重复 upsert 不产生重复数据）
+
+stty cols 500 rows 24; kill -WINCH $$; stty -stub；工程中对接真实 embedding provider）：
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import List, Sequence
+import asyncio
+import hashlib
+import math
+
+
+@dataclass(frozen=True)
+class EmbeddingResult:
+    vectors: List[List[float]]
+    dim: int
+
+
+class EmbeddingProvider:
+    async def embed(self, texts: Sequence[str]) -> EmbeddingResult:
+        raise NotImplementedError
+
+
+class DeterministicHashEmbedding(EmbeddingProvider):
+    """用于本地验证/单测的可重复 embedding（不依赖外部服务）。"""
+
+    def __init__(self, dim: int = 128) -> None:
+        self.dim = dim
+
+    async def embed(self, texts: Sequence[str]) -> EmbeddingResult:
+        vectors: List[List[float]] = []
+        for t in texts:
+            h = hashlib.sha256(t.encode("utf-8")).digest()
+            # expand bytes to dim floats
+            v = [(h[i % len(h)] / 255.0) for i in range(self.dim)]
+            # L2 normalize
+            norm = math.sqrt(sum(x * x for x in v)) or 1.0
+            vectors.append([x / norm for x in v])
+        return EmbeddingResult(vectors=vectors, dim=self.dim)
+
+
+async def batch_embed(
+    provider: EmbeddingProvider,
+    texts: Sequence[str],
+    batch_size: int = 16,
+    max_concurrency: int = 4,
+) -> List[List[float]]:
+    sem = asyncio.Semaphore(max_concurrency)
+
+    async def one_batch(batch: Sequence[str]) -> List[List[float]]:
+        async with sem:
+            res = await provider.embed(batch)
+            return res.vectors
+
+    tasks = []
+    for i in range(0, len(texts), batch_size):
+        tasks.append(one_batch(texts[i : i + batch_size]))
+
+    out: List[List[float]] = []
+    for part in await asyncio.gather(*tasks):
+        out.extend(part)
+    return out
+```
+
+##### 6. 向量版本与可回滚
+
+stty cols 500 rows 24; kill -WINCH $$; 
+- 在 payload 中写入 `embedding_model`、`embedding_dim`、`embedding_version`；
+- collection 支持按版本过滤，或通过不同 collection 隔离。
+
+$? payload 字段：
+
+```json
+{
+  "knowledge_id": "...",
+  "chunk_id": "...",
+  "embedding_model": "text-embedding-3-small",
+  "embedding_dim": 1536,
+  "embedding_version": "v1",
+  "product_line": "SoC_A",
+  "component": "Kernel"
+}
+```
 #### 1.5.4 RAG 检索流程详细设计
 
 ##### 1. 多阶段检索架构
@@ -2091,6 +2285,173 @@ INDEX_STRATEGIES = {
 }
 ```
 
+
+
+### 2.4 数据一致性和事务设计
+
+stty cols 500 rows 24; kill -WINCH $$; stty -echo
+- **强一致数据**（PostgreSQL）：代码修改记录、测试执行记录、迭代记录、知识元数据
+- **最终一致数据**（向量库/ES）：知识 chunk 向量、关键词索引
+
+#### 2.4.1 一致性目标与边界
+
+| 数据对象 | 一致性要求 | 说明 |
+|---|---|---|
+| KnowledgeUnit 元数据 | 强一致 | 作为“事实源”（source of truth） |
+| 向量库 chunk | 最终一致 | 可通过重建/回放恢复 |
+| Elasticsearch 索引 | 最终一致 | 仅用于加速 keyword 检索 |
+
+**核心原则**：以 PostgreSQL 为主库；向量库/ES 只存派生数据。
+
+#### 2.4.2 事务策略：Outbox Pattern（推荐）
+
+/home/engine/project KnowledgeUnit 时，同时写入 outbox 事件，由后台 worker 异步完成：向量化、upsert 向量库、写 ES。
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict, Optional
+import json
+import uuid
+
+from sqlalchemy import Column, DateTime, String, Text
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import declarative_base
+
+Base = declarative_base()
+
+
+class OutboxEvent(Base):
+    __tablename__ = "outbox_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    event_type = Column(String(64), nullable=False, index=True)
+    aggregate_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    payload_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    processed_at = Column(DateTime, nullable=True)
+
+
+@dataclass(frozen=True)
+class KnowledgeUpsertEvent:
+    knowledge_id: str
+    version: int
+
+    def to_payload(self) -> str:
+        return json.dumps({"knowledge_id": self.knowledge_id, "version": self.version})
+```
+
+**伪代码（写主库 + outbox 同事务提交）**：
+
+```text
+Input: knowledge_unit
+Output: knowledge_id
+
+1. begin transaction
+2.   insert knowledge_units (...)
+3.   insert outbox_events(type="KNOWLEDGE_UPSERT", aggregate_id=knowledge_id, payload=...)
+4. commit
+5. worker polls outbox and performs vector/es updates
+
+Time: O(1) for DB writes
+```
+
+#### 2.4.3 幂等与去重（向量/索引侧）
+
+- 向量库 upsert key：`{knowledge_id}_chunk_{i}`（已有实现）
+- ES 文档 id：同上
+- worker 处理 outbox：以 outbox event id 做幂等（见第 6 部分扩展）
+
+---
+
+### 2.5 数据索引详细策略
+
+#### 2.5.1 PostgreSQL 索引
+
+stty cols 500 rows 24; kill -WINCH $$; stty -
+
+```sql
+-- 知识：按产品线/组件/类型/是否激活过滤
+CREATE INDEX IF NOT EXISTS idx_ku_pl_comp_type_active
+ON knowledge_units(product_line, component, knowledge_type, is_active);
+
+-- 测试执行：按产品线 + 时间范围 + 状态
+CREATE INDEX IF NOT EXISTS idx_test_exec_pl_status_created
+ON test_executions(product_line, status, created_at DESC);
+
+-- outbox：按未处理事件快速扫描
+CREATE INDEX IF NOT EXISTS idx_outbox_unprocessed
+ON outbox_events(processed_at)
+WHERE processed_at IS NULL;
+```
+
+#### 2.5.2 JSONB/全文索引（可选）
+
+- 若 `knowledge_units.metadata` 存储关键字段（如 `firmware_version`），建议改为 `JSONB` 并加 GIN：
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_ku_metadata_gin
+ON knowledge_units USING GIN (metadata);
+```
+
+- 对 `content/summary` 做全文索引（用于纯 PG keyword）：
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_ku_content_tsv
+ON knowledge_units USING GIN (to_tsvector('english', coalesce(title,'') || ' ' || coalesce(summary,'') || ' ' || coalesce(content,'')));
+```
+
+---
+
+### 2.6 数据备份和恢复策略
+
+#### 2.6.1 PostgreSQL
+
+- **备份**：每日全量（`pg_dump` custom format）+ WAL 归档
+- **恢复演练**：每周在 staging 做一次“从备份恢复并跑 smoke test”
+
+stty cols 500 rows 24; kill -WINCH $$; stty -echo
+
+```bash
+# full backup
+pg_dump --format=custom --file=agent_$(date +%F).dump "$DATABASE_URL"
+
+# restore
+pg_restore --clean --if-exists --dbname "$DATABASE_URL" agent_2026-01-27.dump
+```
+
+#### 2.6.2 向量库与 ES
+
+- Qdrant/Milvus/ES 数据都属于**派生数据**：
+  - 可备份以加速恢复
+  - 但必须支持“根据 PostgreSQL 元数据重建”
+
+---
+
+### 2.7 数据迁移指南
+
+#### 2.7.1 迁移原则
+
+1) Schema 变更必须向后兼容（至少 1 个版本窗口）
+2) 大字段变更采用双写/回填
+3) 每次迁移都必须提供 downgrade（若业务允许）
+
+#### 2.7.2 双写迁移示例（伪代码）
+
+```text
+Goal: move from metadata['firmware_version'] to column firmware_version
+
+1. Add nullable column firmware_version
+2. Deploy code vNext: write both metadata and firmware_version
+3. Backfill existing rows in batches
+4. Add NOT NULL / index constraints if needed
+5. Deploy code vFinal: read firmware_version only
+6. Optionally remove old metadata key
+
+Time: O(n) backfill
+```
 ## 3. API and Interface Design
 
 本节定义了系统的所有外部接口规范，包括 Agent 通信、知识库查询、测试执行等。
@@ -2588,6 +2949,170 @@ AUTH_AND_RATE_LIMITS = {
 }
 ```
 
+
+
+### 3.8 SDK 和客户端库设计
+
+ **Python SDK**（可扩展到 TypeScript/Go），用于：
+- 触发分析/测试/修复流程
+- 查询知识库（RAG）
+- 获取迭代状态与结果
+
+#### 3.8.1 SDK 设计原则
+
+- 类型安全：公开方法带类型注解
+- 错误可诊断：统一异常层次，保留 `request_id`/`error_code`
+- 可测试：HTTP client 可注入（便于 mock）
+
+#### 3.8.2 Python SDK 代码示例（可运行模板）
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
+import requests
+
+
+class AgentAPIError(RuntimeError):
+    def __init__(self, message: str, *, status_code: int, payload: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.payload = payload or {}
+
+
+@dataclass(frozen=True)
+class AgentClientConfig:
+    base_url: str
+    token: str
+    timeout_sec: int = 30
+
+
+class AgentClient:
+    def __init__(self, cfg: AgentClientConfig, session: Optional[requests.Session] = None) -> None:
+        self.cfg = cfg
+        self._session = session or requests.Session()
+
+    def _headers(self) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.cfg.token}",
+            "Content-Type": "application/json",
+        }
+
+    def health(self) -> Dict[str, Any]:
+        r = self._session.get(f"{self.cfg.base_url}/healthz", timeout=self.cfg.timeout_sec)
+        r.raise_for_status()
+        return r.json()
+
+    def search_knowledge(self, query: str, *, top_k: int = 5, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload = {"query": query, "top_k": top_k, "filters": filters or {}}
+        r = self._session.post(
+            f"{self.cfg.base_url}/api/v1/knowledge/search",
+            headers=self._headers(),
+            json=payload,
+            timeout=self.cfg.timeout_sec,
+        )
+        if r.status_code >= 400:
+            raise AgentAPIError("knowledge search failed", status_code=r.status_code, payload=r.json() if r.content else {})
+        return r.json()
+
+    def start_analysis(self, project: str, commit: str, artifact_url: str, *, product_line: str) -> Dict[str, Any]:
+        payload = {"project": project, "commit": commit, "artifact_url": artifact_url, "product_line": product_line}
+        r = self._session.post(
+            f"{self.cfg.base_url}/api/v1/analysis",
+            headers=self._headers(),
+            json=payload,
+            timeout=self.cfg.timeout_sec,
+        )
+        if r.status_code >= 400:
+            raise AgentAPIError("start analysis failed", status_code=r.status_code, payload=r.json() if r.content else {})
+        return r.json()
+```
+
+Usage 示例：
+
+```python
+from __future__ import annotations
+
+from agent_sdk import AgentClient, AgentClientConfig
+
+client = AgentClient(AgentClientConfig(base_url="https://agent.example.com", token="<token>"))
+print(client.health())
+print(client.search_knowledge("NULL pointer dereference in driver", top_k=3))
+```
+
+---
+
+### 3.9 API 版本控制和兼容性
+
+#### 3.9.1 版本策略
+
+- URL 版本：`/api/v1/...`
+- Header 协商（可选）：`Accept: application/vnd.agent+json;version=1`
+
+#### 3.9.2 兼容性约束
+
+- v1 内部：
+  - **只允许新增字段**（向后兼容）
+  - 禁止变更字段语义/类型
+- 重大变更：发布 v2
+
+#### 3.9.3 弃用流程
+
+```text
+1) 标记 deprecated（文档 + 响应头 Deprecation）
+2) 观测调用量
+3) 提供迁移指南
+4) 在 N 个版本后移除
+```
+
+---
+
+### 3.10 API 集成测试框架
+
+#### 3.10.1 测试目标
+
+- 校验接口契约：状态码、字段、错误码
+- 回归关键流程：检索 → 生成 → 验证（最小闭环）
+
+#### 3.10.2 pytest + requests 的测试示例
+
+```python
+from __future__ import annotations
+
+from typing import Any, Dict
+import os
+import requests
+
+
+BASE_URL = os.environ.get("AGENT_BASE_URL", "http://localhost:8080")
+TOKEN = os.environ.get("AGENT_TOKEN", "test-token")
+
+
+def test_healthz() -> None:
+    r = requests.get(f"{BASE_URL}/healthz", timeout=10)
+    assert r.status_code == 200
+
+
+def test_knowledge_search_contract() -> None:
+    payload: Dict[str, Any] = {"query": "memory leak", "top_k": 3, "filters": {}}
+    r = requests.post(
+        f"{BASE_URL}/api/v1/knowledge/search",
+        headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=10,
+    )
+
+    assert r.status_code in (200, 401, 403)
+    if r.status_code == 200:
+        body = r.json()
+        assert "items" in body
+        assert isinstance(body["items"], list)
+```
+
+#### 3.10.3 契约测试（OpenAPI）建议
+
+- FastAPI 可自动生成 OpenAPI；在 CI 中使用 `schemathesis` 做基于 schema 的 fuzz。
 ## 4. 配置和策略详化
 
 ### 4.1 Agent配置Schema
@@ -3102,6 +3627,119 @@ windows_environments:
       default_timeout_sec: 600
 ```
 
+
+
+### 4.3 LLM 模型配置和切换策略
+
+#### 4.3.1 模型抽象
+
+- LLM Provider：OpenAI/Anthropic/本地 vLLM
+- Model Profile：定义用途（analysis/codegen/rerank_prompt）、上下文长度、价格、速率限制
+
+stty cols 500 rows 24; kill -WINCH $$; stty -YAML）：
+
+```yaml
+llm:
+  provider: openai
+  profiles:
+    analysis:
+      model: gpt-4.1-mini
+      max_tokens: 2048
+      temperature: 0.2
+      timeout_sec: 60
+    codegen:
+      model: gpt-4.1
+      max_tokens: 4096
+      temperature: 0.1
+      timeout_sec: 90
+  fallback_chain:
+    - profile: analysis
+      on_errors: ["timeout", "rate_limit", "5xx"]
+      fallback_to: "analysis_backup"
+    - profile: analysis_backup
+      model: gpt-4.1-mini
+      max_tokens: 1024
+      temperature: 0.0
+```
+
+#### 4.3.2 动态切换算法（伪代码）
+
+```text
+Input: request(type, tokens_estimate), provider_state
+Output: chosen_model_profile
+
+1. candidates = profiles_for_type(type)
+2. filter candidates by context_limit >= tokens_estimate
+3. score each candidate:
+     score = w_cost * normalized_cost + w_latency * p95_latency + w_error * recent_error_rate
+4. choose argmin(score)
+5. if provider_state.rate_limited: choose next best
+
+Time: O(k)
+```
+
+---
+
+### 4.4 向量模型配置
+
+#### 4.4.1 Embedding 配置模板
+
+```yaml
+embedding:
+  provider: openai
+  model: text-embedding-3-small
+  dim: 1536
+  normalize: true
+  preprocess:
+    normalize_timestamp: true
+    normalize_address: true
+    max_repeated_lines: 3
+  batch:
+    batch_size: 16
+    max_concurrency: 4
+```
+
+#### 4.4.2 版本控制
+
+- `embedding_version` 用于区分预处理/模型变化
+- 一旦变化：
+  - 新写入使用新版本
+  - 旧版本可后台重建
+
+---
+
+### 4.5 参数调优指南
+
+#### 4.5.1 需要调优的关键参数
+
+| 模块 | 参数 | 默认 | 调优方向 |
+|---|---|---:|---|
+| Chunking | chunk_size | 1000 | 文档更长 → 增大；噪音多 → 减小 |
+| Chunking | overlap | 200 | 召回不连续 → 增大；成本高 → 减小 |
+| Retrieval | top_k | 10 | recall 不足 → 增大；延迟高 → 减小 |
+| Hybrid | vector_weight | 0.6 | 语义强 → 增大；关键词强 → 减小 |
+| Rerank | rerank_top_n | 20 | 误召回多 → 增大；延迟高 → 减小 |
+
+#### 4.5.2 自动调参思路（坐标下降，伪代码）
+
+```text
+Input: param_grid, eval_fn
+Output: best_params
+
+1. init params = defaults
+2. repeat until no improvement:
+3.   for each param in params:
+4.     try candidate values in grid around current
+5.     choose value that maximizes eval_fn(params)
+
+Eval metrics: nDCG@k, Recall@k, P95 latency
+Time: O(iterations * |grid| * cost(eval_fn))
+```
+
+#### 4.5.3 评估集构建
+
+- 从历史工单抽样：query（问题描述） + ground truth（人工标注知识/修复）
+- 评估指标：Recall@k、MRR、nDCG、人工满意度
 ## 5. 工作流和流程设计详化
 
 ### 5.1 核心循环流程设计
@@ -3873,6 +4511,160 @@ class AgentOperationIdempotency:
             await self.operation_tracker.fail_operation(modification_id, str(e))
             raise
 
+
+
+### 6.5 分布式事务管理
+
+ PostgreSQL（强一致）与向量库/ES（最终一致），不推荐 2PC。推荐：
+- **Outbox + 最终一致**（见 2.4）
+- **Saga**（跨服务多步骤补偿）用于“长事务”（例如批量导入知识）
+
+#### 6.5.1 Saga 编排（示例：批量导入知识）
+
+stty cols 500 rows 24; kill -WINCH $$; stty -echo
+1) 写入 `knowledge_units`
+2) 产生 outbox：`KNOWLEDGE_UPSERT`
+3) worker 向量化 + upsert 向量库
+4) worker 写 ES
+
+stty cols 500 rows 24; kill -WINCH $$; stty -echo
+- 若 step3/4 失败：不回滚主库，标记 `knowledge_units.is_active=false` 或写入 `sync_status=FAILED` 并重试
+
+**伪代码**：
+
+```text
+Input: items[]
+Output: import_result
+
+1. for item in items:
+2.   tx begin
+3.     insert knowledge_units
+4.     insert outbox_events(KNOWLEDGE_UPSERT)
+5.   commit
+6. worker retries until processed
+
+Time: O(n)
+```
+
+---
+
+### 6.6 幂等性实现详解
+
+#### 6.6.1 幂等键设计
+
+| 操作 | 幂等键 | 说明 |
+|---|---|---|
+| add_knowledge | `sha256(content+metadata+type)` 或外部传入 | 防止重复导入 |
+| vector upsert | `knowledge_id_chunk_i` | upsert 覆盖 |
+| outbox processing | `outbox_event.id` | “至多一次写入派生侧” |
+
+#### 6.6.2 幂等装饰器示例（Redis）
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Awaitable, Callable, Optional, TypeVar
+import asyncio
+
+T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class IdempotencyConfig:
+    ttl_sec: int = 3600
+
+
+class IdempotencyStore:
+    async def acquire(self, key: str, ttl_sec: int) -> bool:
+        raise NotImplementedError
+
+
+class InMemoryIdempotencyStore(IdempotencyStore):
+    def __init__(self) -> None:
+        self._keys: set[str] = set()
+
+    async def acquire(self, key: str, ttl_sec: int) -> bool:
+        if key in self._keys:
+            return False
+        self._keys.add(key)
+        return True
+
+
+def idempotent(store: IdempotencyStore, cfg: IdempotencyConfig = IdempotencyConfig()):
+    def wrap(fn: Callable[..., Awaitable[T]]):
+        async def inner(*args, **kwargs) -> T:
+            key = kwargs.get("idempotency_key")
+            if not key:
+                return await fn(*args, **kwargs)
+
+            ok = await store.acquire(key, cfg.ttl_sec)
+            if not ok:
+                raise RuntimeError(f"duplicate request: {key}")
+            return await fn(*args, **kwargs)
+
+        return inner
+
+    return wrap
+```
+
+---
+
+### 6.7 重试和退避策略的详细算法
+
+stty cols 500 rows 24; kill -WINCH $$; stty -LLM、向量库、ES、GitLab）需要统一重试策略：
+- 可重试：超时、连接错误、429、部分 5xx
+- 不可重试：400/401/403、业务校验失败
+
+#### 6.7.1 指数退避 + 抖动（Full Jitter）伪代码
+
+```text
+Input: attempt, base_delay_ms, cap_ms
+Output: sleep_ms
+
+1. exp = min(cap_ms, base_delay_ms * 2^attempt)
+2. sleep_ms = random_uniform(0, exp)
+3. return sleep_ms
+
+Time: O(1)
+Space: O(1)
+```
+
+#### 6.7.2 可运行实现
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable, TypeVar
+import random
+import time
+
+T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class RetryConfig:
+    max_attempts: int = 5
+    base_delay_ms: int = 200
+    cap_ms: int = 10_000
+
+
+def retry_sync(fn: Callable[[], T], cfg: RetryConfig, is_retryable: Callable[[Exception], bool]) -> T:
+    last_exc: Exception | None = None
+    for attempt in range(cfg.max_attempts):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001
+            last_exc = e
+            if not is_retryable(e) or attempt == cfg.max_attempts - 1:
+                raise
+            exp = min(cfg.cap_ms, cfg.base_delay_ms * (2**attempt))
+            time.sleep(random.uniform(0, exp) / 1000.0)
+
+    assert last_exc is not None
+    raise last_exc
+```
 ## 7. 性能和可扩展性设计
 
 ### 7.1 CodeAnalyzer缓存策略
@@ -4425,6 +5217,96 @@ class EventDrivenArchitecture:
             await self.event_bus.publish('task.completed', event.task_completion_info)
 ```
 
+
+
+### 7.5 性能测试和基准设计
+
+#### 7.5.1 指标定义
+
+| 指标 | 定义 | 目标（示例） |
+|---|---|---|
+| P50/P95 latency | 请求延迟分位数 | P95 < 2s（知识检索） |
+| Throughput | QPS / jobs per min | 检索 >= 50 QPS |
+| Recall@k | 召回率 | Recall@10 >= 0.85 |
+| Cost per run | 单次修复成本（LLM + infra） | 受控并可观测 |
+
+#### 7.5.2 基准工具建议
+
+- HTTP 压测：k6 / locust
+- 向量库基准：ann-benchmarks（抽样）
+- 端到端：pytest + 记录 span/指标
+
+#### 7.5.3 k6 脚本示例
+
+```javascript
+import http from 'k6/http';
+import { check, sleep } from 'k6';
+
+export const options = {
+  vus: 20,
+  duration: '2m',
+};
+
+export default function () {
+  const payload = JSON.stringify({ query: 'memory leak', top_k: 5, filters: {} });
+  const params = { headers: { 'Content-Type': 'application/json' } };
+  const res = http.post('http://localhost:8080/api/v1/knowledge/search', payload, params);
+  check(res, { 'status is 200/401': (r) => r.status === 200 || r.status === 401 });
+  sleep(0.1);
+}
+```
+
+---
+
+### 7.6 压力测试场景和预期结果
+
+#### 7.6.1 场景
+
+1) **检索高并发**：100 QPS，top_k=10，混合检索 + rerank
+2) **知识批量导入**：10k 文档，batch=32，并发=8
+3) **LLM 速率限制**：模拟 429，验证 fallback + backoff
+
+#### 7.6.2 预期
+
+- 检索 P95 < 3s；失败率 < 0.5%
+- 导入吞吐：>= 50 doc/s（视 embedding provider 而定）
+
+---
+
+### 7.7 容量规划指南
+
+#### 7.7.1 存储估算
+
+- 假设：
+  - 平均每个 KnowledgeUnit 10 chunks
+  - 向量维度 1536 float32（4 bytes）
+
+stty cols 500 rows 24; kill -WINCH $$; stty -echo`1536 * 4 = 6144 bytes ≈ 6KB`
+
+- 100 万 chunks ≈ 6GB（不含 payload/索引开销）
+- Qdrant/Milvus 索引可能增加 30%~200%
+
+#### 7.7.2 计算与成本
+
+- reranker 若为 cross-encoder，CPU 可能成为瓶颈；建议：
+  - rerank_top_n 控制在 20~50
+  - GPU 部署 reranker（如需要）
+
+---
+
+### 7.8 成本优化策略
+
+- 分层策略：
+  1) keyword/metadata filter（便宜）
+  2) vector ANN（中）
+  3) rerank（贵）
+  4) LLM 生成（最贵）
+
+- 优化手段：
+  - embedding cache（query/文档向量缓存）
+  - rerank cache（候选集 hash）
+  - prompt 压缩（只注入高相关 chunks）
+  - 批处理导入（降低 embedding 单位开销）
 ## 8. 监控和可观测性设计
 
 ### 8.1 关键性能指标(KPI)
@@ -4980,9 +5862,453 @@ class IntelligentAlertManager:
         return self.noise_filter.is_in_suppression_period(suppression_config)
 ```
 
-## 9. 总结
 
-本详细设计文档全面描述了AI驱动固件智能测试系统的第4-8节内容，包括：
+
+### 8.5 健康检查和自诊断
+
+#### 8.5.1 健康检查端点设计
+
+- `/healthz`：进程活着即可（不依赖外部组件）
+- `/readyz`：依赖就绪（DB/Redis/VectorDB/ES）
+
+#stty cols 500 rows 24; kill -WINCH $$; stty -echo
+stty cols 500 rows 24; kill -WINCH $$; stty -echo
+
+```text
+Input: none
+Output: {status, checks[]}
+
+1. checks = []
+2. checks.append(ping_db())
+3. checks.append(ping_redis())
+4. checks.append(ping_vector_db())
+5. ready = all(check.ok)
+6. return {ready?200:503, checks}
+
+Time: O(m) (m=deps)
+```
+
+#### 8.5.2 FastAPI 示例
+
+```python
+from __future__ import annotations
+
+from typing import Any, Dict
+from fastapi import FastAPI
+
+app = FastAPI()
+
+
+@app.get('/healthz')
+def healthz() -> Dict[str, Any]:
+    return {"status": "ok"}
+
+
+@app.get('/readyz')
+def readyz() -> Dict[str, Any]:
+    # 这里用伪实现；生产中替换为真实 ping
+    checks = [
+        {"name": "postgres", "ok": True},
+        {"name": "redis", "ok": True},
+        {"name": "vector_db", "ok": True},
+    ]
+    ready = all(c["ok"] for c in checks)
+    return {"ready": ready, "checks": checks}
+```
+
+---
+
+### 8.6 可视化仪表盘设计
+
+#### 8.6.1 Grafana Dashboard 关键面板
+
+- 业务：
+  - `knowledge.search` P95
+  - `rag.rerank` P95
+  - `iteration.success_rate`
+- 资源：CPU/Mem/GC
+- 依赖：Qdrant/Milvus latency、Postgres connections
+
+#### 8.6.2 Grafana 面板 JSON（片段示例）
+
+```json
+{
+  "title": "Knowledge Search Latency (P95)",
+  "type": "timeseries",
+  "targets": [
+    {
+      "expr": "histogram_quantile(0.95, sum(rate(knowledge_search_latency_ms_bucket[5m])) by (le))",
+      "legendFormat": "p95"
+    }
+  ]
+}
+```
+
+---
+
+### 8.7 日志分析和趋势预测
+
+#### 8.7.1 ELK 查询模板
+
+- Top errors（按 error_code 聚合）：
+
+```text
+service.name:"agent-api" AND log.level:"ERROR"
+```
+
+Kibana 聚合：Terms aggregation on `error_code.keyword`。
+
+#### 8.7.2 趋势预测（简单线性回归）示例
+
+stty cols 500 rows 24; kill -WINCH $$; stty -echo 24h `knowledge.search` 错误率是否超过阈值。
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import List, Tuple
+
+
+@dataclass(frozen=True)
+class ForecastResult:
+    slope: float
+    intercept: float
+
+
+def linear_regression(xs: List[float], ys: List[float]) -> ForecastResult:
+    if len(xs) != len(ys) or len(xs) < 2:
+        raise ValueError("need >=2 points")
+
+    n = float(len(xs))
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+
+    num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    den = sum((x - mean_x) ** 2 for x in xs) or 1.0
+
+    slope = num / den
+    intercept = mean_y - slope * mean_x
+    return ForecastResult(slope=slope, intercept=intercept)
+
+
+def predict(fr: ForecastResult, x: float) -> float:
+    return fr.slope * x + fr.intercept
+```
+
+- 输入：过去 N 个时间桶的错误率序列
+- 输出：趋势斜率 + 未来值预测
+- 复杂度：O(n)
+## 9. 部署与运维设计
+
+本部分从工程落地角度给出容器化、Kubernetes 编排、配置隔离、数据库迁移/备份、启动初始化以及监控与日志聚合的**可直接复用模板**。
+
+> 约定：本系统以 Python 服务为主（FastAPI/gRPC + 后台 Worker），依赖 PostgreSQL + Redis + 向量数据库（Qdrant 或 Milvus）+ Elasticsearch（可选）。
+
+### 9.1 Docker 容器化设计
+
+#### 9.1.1 镜像分层与构建策略
+
+- **基础镜像**：优先 `python:3.11-slim`（体积小、依赖稳定），若需要编译依赖（`psycopg`/`uvloop`/`grpcio`），使用 build stage。
+- **分层原则**：
+  1) 先复制 `requirements.txt` 并安装依赖（利用缓存）；
+  2) 再复制业务代码；
+  3) 最后写入运行入口与健康检查。
+- **安全**：
+  - 非 root 用户运行；
+  - 只开放必要端口；
+  - `PYTHONDONTWRITEBYTECODE=1`、`PYTHONUNBUFFERED=1`；
+  - 通过 `--no-cache-dir` 降低镜像体积。
+
+#### 9.1.2 Dockerfile（API 服务）示例
+
+```dockerfile
+# syntax=docker/dockerfile:1
+
+FROM python:3.11-slim AS base
+
+ENV PYTHONDONTWRITEBYTECODE=1     PYTHONUNBUFFERED=1     PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends       build-essential       curl     && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+RUN useradd -m -u 10001 appuser
+
+COPY . /app
+
+USER appuser
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3   CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
+
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+```
+
+#### 9.1.3 docker-compose.yml（本地一键启动）示例
+
+```yaml
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: agent
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: agent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  qdrant:
+    image: qdrant/qdrant:v1.9.5
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.2
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    environment:
+      DATABASE_URL: postgresql+psycopg://agent:agent@postgres:5432/agent
+      REDIS_URL: redis://redis:6379/0
+      VECTOR_DB_URL: http://qdrant:6333
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ENV: local
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+      - redis
+      - qdrant
+      - elasticsearch
+
+volumes:
+  pg_data:
+  qdrant_data:
+```
+
+### 9.2 Kubernetes 编排设计
+
+#### 9.2.1 组件拆分
+
+- `api`：无状态 Deployment + HPA
+- `worker`：无状态 Deployment（或 KEDA 按队列扩缩）
+- `postgres`：建议使用云托管；自建需 StatefulSet + PVC
+- `redis`：建议使用托管或 Helm chart
+- `qdrant/milvus`：推荐 Helm（Milvus）或 StatefulSet（Qdrant）
+
+#### 9.2.2 K8s manifests（API）示例
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-api
+  namespace: agent-system
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agent-api
+  template:
+    metadata:
+      labels:
+        app: agent-api
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/your-org/agent-api:1.0.0
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: agent-config
+            - secretRef:
+                name: agent-secrets
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-api
+  namespace: agent-system
+spec:
+  selector:
+    app: agent-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+```
+
+### 9.3 配置管理和环境隔离
+
+- 三层覆盖：默认配置 → 环境配置 → 运行时覆盖（Env/ConfigMap/Secret）
+- 环境隔离：Namespace + DB/Collection/Index 按环境命名
+
+### 9.4 数据库迁移和备份策略
+
+- SQL schema：Alembic
+- PostgreSQL：全量 + WAL 增量（生产推荐）
+- 向量库/ES：snapshot 到对象存储
+
+### 9.5 系统启动和依赖初始化
+
+```text
+Start order:
+1) Postgres/Redis/VectorDB/ES ready
+2) Run migrations
+3) Ensure vector collections/indexes
+4) Start API
+5) Start Workers
+```
+
+### 9.6 监控和日志聚合（ELK Stack）
+
+- 应用日志输出 JSON 到 stdout
+- 通过 Filebeat/FluentBit 采集到 Elasticsearch
+- Kibana 提供查询与可视化
+
+---
+
+## 10. 最佳实践和集成指南
+
+
+### 10.1 系统集成最佳实践
+
+- **输出可解释证据链**：每次自动修复必须落库：检索到的知识（knowledge_id/chunk_id）、关键日志片段、diff、验证结果。
+- **隔离与权限**：产品线/项目维度隔离 token 与权限；敏感日志脱敏后入库。
+- **渐进式自动化**：
+  1) 仅分析与建议（human-in-the-loop）
+  2) 自动生成 MR，但需要人工 Approve
+  3) 自动合并（仅在低风险、强验证通过时）
+
+### 10.2 与 Redmine/GitLab 集成指南
+
+- **Redmine**：
+  - 拉取工单描述/附件（日志、core dump）
+  - 回写分析结论与建议 patch
+- **GitLab**：
+  - 创建分支与 MR
+  - 回写 pipeline 结果
+
+#stty cols 500 rows 24; kill -WINCH $$; 
+ 9.2/9.6 小节中给出可复用模板；工程中建议封装为 provider。）
+
+### 10.3 CI/CD 集成示例
+
+#### 10.3.1 典型链路
+
+```mermaid
+sequenceDiagram
+  participant CI as CI Pipeline
+  participant Agent as Agent API
+  participant VDB as VectorDB
+  participant LLM as LLM Provider
+
+  CI->>Agent: POST /api/v1/analysis (artifact_url)
+  Agent->>VDB: search (hybrid)
+  Agent->>LLM: generate fix with evidence
+  Agent-->>CI: analysis_id
+  CI->>Agent: GET /api/v1/analysis/{id}
+```
+
+#### 10.3.2 质量门禁建议
+
+- 只有在以下都满足时才允许自动提 MR：
+  - 单元测试通过
+  - 编译通过
+  - 风险评估 <= 阈值（变更范围/关键文件）
+
+### 10.4 多产品线管理最佳实践
+
+- **检索权重**：产品线专属知识 > 组件专属知识 > 全局知识
+- **冷启动策略**：
+  - 先导入公共最佳实践与通用错误模式
+  - 再从历史日志回填产品线知识
+- **冲突解决**：当相同错误在不同产品线有不同修复方式，必须按 `product_line` 过滤或在 rerank 中增加权重惩罚（见 1.5.4）。
+
+### 10.5 故障排查指南
+
+#### 10.5.1 常见故障与定位
+
+| 现象 | 高概率原因 | 定位方式 |
+|---|---|---|
+| 检索为空 | collection/维度不匹配 | 检查 embedding_dim、collection schema |
+| 检索延迟高 | 向量库索引未构建/磁盘慢 | 检查 HNSW/IVF 状态与 I/O |
+| rerank 超时 | 候选集过大/模型慢 | 降低 rerank_top_n/启用 cache |
+| LLM 输出跑偏 | 上下文太长/噪音多 | 调整 chunk/过滤日志 |
+
+#### 10.5.2 故障决策树
+
+```text
+If search latency high:
+  1) check vector_db p95
+  2) if vector_db ok -> check reranker p95
+  3) if reranker ok -> check LLM p95
+  4) else scale corresponding component
+```
+
+### 10.6 性能调优最佳实践
+
+- 先做“减法”：减少候选集、减少上下文、减少 LLM tokens。
+- 再做“缓存”：query embedding cache、topk cache、rerank cache。
+- 最后做“扩容”：水平扩展 api/worker，向量库加 shard。
+
+### 10.7 安全加固措施
+
+#stty cols 500 rows 24; kill -WINCH 37; stty -echo
+/日志泄露，避免自动修复引入后门。
+
+#) 
+stty cols 500 rows 24; kill -WINCH $$; stty -echo
+- [ ] API 认证：JWT/OAuth2 + RBAC
+- [ ] 审计日志：记录调用方、参数摘要、结果、trace_id
+- [ ] 脱敏：日志中 token/密钥/序列号脱敏
+- [ ] 供应链：依赖漏洞扫描 + 镜像签名
+- [ ] 输出约束：LLM 输出必须经过策略校验（禁止执行危险命令）
+## 11. 附录
+
+stty cols 500 rows 24; kill -WINCH $$; FAQ、参考资源、变更日志等）
+
+---
+
+## 12. 总结
+
 
 ### 4. 配置和策略详化
 - **Agent配置Schema**：详细定义了CodeAgent、TestAgent、AnalysisAgent、DecisionAgent的完整配置结构
