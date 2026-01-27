@@ -94,9 +94,10 @@ API：内网大模型API（优先）
 - 完成时间：2026-01-27
 
 ### 任务1-4：Agent和状态机设计（AGENT_DESIGN.md + STATE_MACHINE.md）
-- 输出：AGENT_DESIGN.md、STATE_MACHINE.md
+- 输出：AGENT_DESIGN.md ✅、STATE_MACHINE.md（待创建）
 - 内容：4个Agent详细设计、状态转移图、循环控制
-- 预计行数：600-700行
+- 预计行数：600-700行（AGENT_DESIGN.md已完成：约350行）
+- 完成时间：2026-01-27（AGENT_DESIGN.md）
 
 ### 任务1-5：工作计划和汇总（WORK_PLAN_V2.md + DETAILED_DESIGN_V2.md）
 - 输出：WORK_PLAN_V2.md、DETAILED_DESIGN_V2.md
@@ -105,7 +106,7 @@ API：内网大模型API（优先）
 
 ## 📊 当前进度
 
-**总体完成度**：约 40%（已完成任务1-1、1-2、1-3）
+**总体完成度**：约 50%（已完成任务1-1、1-2、1-3、1-4的AGENT_DESIGN.md）
 
 ```
 ✅ 已完成：
@@ -114,23 +115,24 @@ API：内网大模型API（优先）
 - 任务1-1：docs/REQUIREMENTS.md（需求规范）
 - 任务1-2：docs/KNOWLEDGE_SCHEMA.md（知识库数据结构设计）
 - 任务1-3：docs/ARCHITECTURE_V2.md（系统架构设计）
+- 任务1-4（部分）：docs/AGENT_DESIGN.md（Agent详细设计）
 
 🔄 进行中：
-- Phase 1 架构设计与需求分析（准备进入任务1-4）
+- Phase 1 架构设计与需求分析（任务1-4的STATE_MACHINE.md）
 
 ⏳ 待开始：
 - Phase 2-6 的所有工作
-- 任务1-4：Agent和状态机设计
+- 任务1-4（剩余）：STATE_MACHINE.md（状态机设计）
 - 任务1-5：工作计划和融合设计
 ```
 
 ## 🔗 关键文档链接
 
 **项目文档**：
-- docs/ARCHITECTURE_V2.md （待创建）
+- docs/ARCHITECTURE_V2.md ✅
 - docs/REQUIREMENTS.md ✅
-- docs/KNOWLEDGE_SCHEMA.md （待创建）
-- docs/AGENT_DESIGN.md （待创建）
+- docs/KNOWLEDGE_SCHEMA.md ✅
+- docs/AGENT_DESIGN.md ✅
 - docs/STATE_MACHINE.md （待创建）
 - docs/WORK_PLAN_V2.md （待创建）
 - docs/DETAILED_DESIGN_V2.md （待创建）
@@ -164,9 +166,10 @@ API：内网大模型API（优先）
 | 日期 | 版本 | 更新内容 |
 |------|------|---------|
 | 2026-01-27 | v1.0 | 创建项目指挥部，完成Phase 1任务拆分规划 |
+| 2026-01-27 | v1.1 | 完成任务1-4的AGENT_DESIGN.md，更新进度至50% |
 
 ---
 
 **最后更新**：2026-01-27  
 **维护者**：AI Agent  
-**下次更新时间**：完成任务1-3后
+**下次更新时间**：完成任务1-4的STATE_MACHINE.md后
