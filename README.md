@@ -28,17 +28,18 @@ docs/
 ├── PROJECT_COMMAND_CENTER.md    # 项目指挥部（首先查看此文件）
 ├── PHASE_1_TASK_BREAKDOWN.md    # Phase 1任务拆分（然后查看此文件）
 ├── CLEANUP_LOG.md               # 文档清理日志
-├── REQUIREMENTS.md              # 需求规范（待创建）
-├── ARCHITECTURE_V2.md           # 系统架构设计（待创建）
-├── KNOWLEDGE_SCHEMA.md          # 知识库schema（待创建）
-├── AGENT_DESIGN.md              # Agent详细设计（待创建）
-├── STATE_MACHINE.md             # 状态机设计（待创建）
-├── WORK_PLAN_V2.md              # 工作计划V2（待创建）
-├── DETAILED_DESIGN_V2.md        # 详细设计V2（待创建）
+├── REQUIREMENTS.md              # 需求规范（已完成）
+├── ARCHITECTURE_V2.md           # 系统架构设计（已完成）
+├── KNOWLEDGE_SCHEMA.md          # 知识库schema（已完成）
+├── AGENT_DESIGN.md              # Agent详细设计（已完成）
+├── STATE_MACHINE.md             # 状态机设计（已完成）
+├── WORK_PLAN_V2.md              # 工作计划V2（已完成）
+├── DETAILED_DESIGN_V2.md        # 详细设计V2（已完成）
 ├── API_SPEC.md                  # API规范（现有）
 ├── DIR_STRUCTURE.md             # 目录结构（现有）
 ├── WORK_PLAN.md                 # 旧工作计划（已过期，仅作参考）
-└── PROJECT_PROGRESS.md          # 历史进度记录（如需可参考）
+├── PROJECT_PROGRESS.md          # 历史进度记录（如需可参考）
+└── TASK_CONTEXT_GUIDE.md        # 任务写作/交付上下文指引
 ```
 
 ## 技术栈
