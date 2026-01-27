@@ -21,6 +21,23 @@
         1.2.8 [核心数据结构详解](#128-核心数据结构详解)
         1.2.9 [验证逻辑深度说明](#129-验证逻辑深度说明)
         1.2.10 [异常处理与边缘情况](#1210-异常处理与边缘情况)
+    1.3 [TestOrchestrator 详细设计](#13-testorchestrator-详细设计)
+        1.3.1 [功能概述](#131-功能概述)
+        1.3.2 [多环境测试执行流程详细说明](#132-多环境测试执行流程详细说明)
+        1.3.3 [环境抽象层设计详细说明](#133-环境抽象层设计详细说明)
+        1.3.4 [测试配置管理详细说明](#134-测试配置管理详细说明)
+        1.3.5 [日志采集和标准化详细说明](#135-日志采集和标准化详细说明)
+        1.3.6 [测试结果格式标准化](#136-测试结果格式标准化)
+        1.3.7 [核心 API 详细定义](#137-核心-api-详细定义)
+    1.4 [ResultAnalyzer 详细设计](#14-resultanalyzer-详细设计)
+        1.4.1 [功能概述](#141-功能概述)
+        1.4.2 [日志解析规则引擎详细说明](#142-日志解析规则引擎详细说明)
+        1.4.3 [错误分类系统详细说明](#143-错误分类系统详细说明)
+        1.4.4 [根因分析详细说明](#144-根因分析详细说明)
+        1.4.5 [经验知识提取详细说明](#145-经验知识提取详细说明)
+        1.4.6 [核心 API 详细定义](#146-核心-api-详细定义)
+        1.4.7 [数据结构详细定义](#147-数据结构详细定义)
+        1.4.8 [设计决策补充](#148-设计决策补充)
 2. [Data Models](#2-data-models)
     2.1 [Code Modification Record](#21-code-modification-record)
     2.2 [Test Execution Record](#22-test-execution-record)
@@ -524,6 +541,411 @@ class ModificationRecord:
 #### 1.2.10 异常处理与边缘情况
 - **编译器 OOM**: 监控编译容器资源，自动调整内存配额。
 - **AI 死循环生成**: 设置最大生成 Token 限制，防止模型失控。
+
+### 1.3 TestOrchestrator 详细设计
+
+#### 1.3.1 功能概述
+TestOrchestrator 是系统的测试执行核心，负责管理各种异构测试环境、调度测试任务、监控执行状态并汇总原始测试数据。它屏蔽了底层硬件和仿真环境的差异，为上层 Agent 提供统一的测试接口。
+
+核心功能深度扩展：
+- **测试框架适配**：通过驱动插件支持 pytest、Robot Framework、CUnit、Google Test、LTP (Linux Test Project) 等。
+- **多环境执行调度**：统一管理 QEMU 模拟器、物理目标板、BMC (via IPMI/Redfish)、树莓派以及 Windows 宿主机。
+- **环境隔离与复位**：确保每个测试用例都在干净、确定的环境中执行，支持自动快照回滚。
+- **全栈日志采集**：实时流式采集串口、系统 syslog、内核 dmesg、应用 stdout 以及硬件传感器（如功耗、温度）日志。
+- **结果标准化处理**：将不同框架的输出（JUnit XML, TAP, JSON）统一转换为系统内置的 `TestResult` 模型。
+
+#### 1.3.2 多环境测试执行流程详细说明
+
+##### 1. QEMU 环境测试执行流程
+QEMU 是固件开发中最常用的仿真环境，其执行流程如下：
+- **初始化阶段**：
+    - 根据配置（架构如 aarch64, 机器类型如 virt, 内存大小）启动 QEMU 进程。
+    - 加载指定的固件镜像（Flash/ROM）和内核镜像。
+    - 配置后端网络（如 TAP 设备或用户态 SLIRP）并映射调试端口（如 GDB, SSH）。
+- **部署阶段**：
+    - 检查 Guest 系统就绪状态（通常通过等待特定的串口输出或 SSH 服务响应）。
+    - 使用 `scp` 或通过 `virtio-fs` 将测试脚本及测试产物（二进制文件）同步到虚拟机。
+- **执行阶段**：
+    - 触发测试脚本运行。
+    - 持续监听 stdout 和 stderr，同时通过 QMP (QEMU Machine Protocol) 监控虚拟机 CPU 负载。
+- **清理阶段**：
+    - 执行关机指令或强制终止 QEMU 进程。
+    - 清理临时磁盘镜像及快照文件。
+- **结果收集**：解析执行输出，提取退出码和关键错误标记。
+
+##### 2. 目标板环境（Target Board）测试执行流程
+物理板卡测试涉及复杂的硬件操作：
+- **锁定资源**：在硬件资源池中申请并独占目标板卡及其关联的 PDU 端口。
+- **固件烧写**：
+    - 建立 SSH 或串口连接。
+    - 利用 TFTP、NFS 或供应商特定的烧录工具（如 OpenOCD）将编译产物刷入非易失性存储。
+- **电源管理**：通过 IPMI 或 PDU API 执行电源循环（Power Cycle），确保硬件状态彻底重置。
+- **日志采集开启**：启动串口服务器（Terminal Server）的录制功能，开始监听 Serial Console。
+- **执行与验证**：在目标板执行测试，并根据串口输出实时判定系统是否发生 Kernel Panic。
+- **清理与回收**：复位硬件到基准状态，解锁资源。
+
+##### 3. 树莓派（Raspberry Pi）环境测试执行流程
+- **SSH 认证**：建立远程 shell 会话。
+- **环境自检**：安装缺失的库依赖，检查 GPIO 映射表是否冲突。
+- **部署与执行**：上传测试套件并赋予执行权限，调用指定命令。
+- **硬件遥测**：利用内置传感器接口采集执行期间的 CPU 温度、核心电压。
+- **资源清理**：还原 GPIO 引脚状态，清理 `/tmp/test_*` 临时工作区。
+
+##### 4. Windows 环境测试执行流程
+针对宿主机相关的工具链或驱动测试：
+- **WinRM 建立**：初始化 Windows 远程管理服务连接。
+- **配置注入**：自动设置测试所需的环境变量（PATH, SystemDrive）。
+- **PowerShell 执行**：利用脚本化的方式触发执行，捕获完整的进程树信息。
+- **日志聚合**：不仅收集脚本输出，还同步查询 Event Log（事件查看器）中的异常。
+- **进程树清理**：测试结束后强制终止所有派生出的子进程。
+
+##### 5. BMC 环境（Baseboard Management Controller）测试执行流程
+- **管理通道建立**：连接 IPMI 接口或 Redfish REST API 端点。
+- **带外控制**：执行远程重启、查询传感器列表。
+- **固件升级测试**：验证 BMC 自身的升级逻辑及对主板固件的控制能力。
+- **SEL 日志审计**：获取 System Event Log，解析其中包含的硬件故障信息。
+
+#### 1.3.3 环境抽象层设计详细说明
+
+```python
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any, Optional
+
+# 基础环境接口（Abstract Base Class）
+class BaseTestEnvironment(ABC):
+    """
+    所有测试环境的基类，定义了环境生命周期的核心契约。
+    """
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.is_initialized = False
+        self.logs = {}
+        self.env_id = config.get("id", "default_env")
+    
+    @abstractmethod
+    def init(self) -> bool:
+        """初始化环境：启动虚拟机、建立 SSH 或重置硬件"""
+        pass
+    
+    @abstractmethod
+    def deploy(self, test_script: str, assets: List[str] = None) -> bool:
+        """部署阶段：文件传输和执行权限设置"""
+        pass
+    
+    @abstractmethod
+    def execute(self, command: str, timeout: int = 300) -> 'TestResult':
+        """执行阶段：触发测试逻辑并监控执行状态"""
+        pass
+    
+    @abstractmethod
+    def collect_logs(self) -> Dict[str, str]:
+        """结果采集：汇总多源日志"""
+        pass
+    
+    @abstractmethod
+    def cleanup(self) -> bool:
+        """清理阶段：销毁实例、释放锁定、清理现场"""
+        pass
+
+# QEMU环境实现示例
+class QEMUEnvironment(BaseTestEnvironment):
+    """QEMU虚拟机环境的具体实现"""
+    
+    def init(self) -> bool:
+        # 1. 组装 QEMU 命令行参数 (arch, drive, netdev)
+        # 2. 启动子进程并记录 PID
+        # 3. 等待 SSH 端口就绪
+        return True
+    
+    def deploy(self, test_script: str, assets: List[str] = None) -> bool:
+        # 使用 scp 将脚本拷贝到 Guest OS 内部
+        return True
+    
+    def execute(self, command: str, timeout: int = 300) -> 'TestResult':
+        # 通过 SSH 远程调用并流式返回结果
+        pass
+
+# 目标板实现示例
+class TargetBoardEnvironment(BaseTestEnvironment):
+    """物理板卡环境实现"""
+    
+    def init(self) -> bool:
+        # 1. 通过 IPMI 发送电源重置信号
+        # 2. 监听串口直到进入登录提示符
+        return True
+
+    def collect_logs(self) -> Dict[str, str]:
+        # 采集串口历史数据 + BMC SEL
+        pass
+```
+
+#### 1.3.4 测试配置管理详细说明
+
+##### 1. YAML 格式的测试配置
+系统采用声明式配置，确保测试过程的可描述性和可控性。
+
+```yaml
+test_suite:
+  name: "Memory Allocation Stress Tests"
+  environment: "qemu"
+  product_line: "arm_tf_v2"
+  timeout: 600
+  
+  # 全局环境变量
+  env_vars:
+    MALLOC_PERTURB_: 165
+    DEBUG_MODE: "1"
+     
+  test_cases:
+    - id: "TC_MALLOC_001"
+      name: "test_malloc_basic"
+      type: "unit"
+      script: "tests/test_malloc_basic.sh"
+      expected_exit_code: 0
+      # 断言逻辑
+      assertions:
+        - "allocated_memory > 0"
+        - "return_ptr != NULL"
+       
+    - id: "TC_MALLOC_002"
+      name: "test_malloc_stress"
+      type: "stress"
+      script: "tests/test_malloc_stress.sh"
+      parameters:
+        iterations: 1000
+        block_size: 4096
+      condition: "mem_size >= 512M" # 基于环境属性的条件运行
+```
+
+##### 2. 参数化与变量注入
+- **维度过滤**：允许根据产品线 (SoC, Firmware Version) 动态选择不同的编译器标志或测试库。
+- **Secrets 管理**：测试所需的认证令牌和 SSH 私钥通过加密的 Vault 注入。
+
+##### 3. 动态生成测试
+- **影响范围分析**：TestOrchestrator 接收来自 CodeAnalyzer 的修改函数列表，自动从案例库中匹配引用了这些函数的测试用例。
+- **自动探索**：在缺乏现成用例时，基于 LLM 的建议自动生成简单的冒烟测试脚本。
+
+#### 1.3.5 日志采集和标准化详细说明
+
+##### 1. 日志源矩阵
+- **stdout/stderr**: 测试脚本的直接输出。
+- **系统日志**: `/var/log/syslog`, `/var/log/auth.log`, dmesg 内核缓冲区。
+- **硬件指标**: CPU 使用率、IO 等待、内存压力指标 (Pressure Stall Information)。
+- **外部通道**: 串口服务器 (Serial Console Server) 录制的原始字符流。
+
+##### 2. 标准化格式 (LogEntry)
+```python
+from datetime import datetime
+from dataclasses import dataclass
+
+@dataclass
+class LogEntry:
+    timestamp: datetime          # 统一转换为 ISO 8601 UTC 时间
+    level: str                   # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    source: str                  # 标识来源: 'serial', 'dmesg', 'app_out'
+    message: str                 # 清洗掉 ANSI 控制符后的原始文本
+    context: dict                # 包含 host_id, pid 等元数据
+```
+
+#### 1.3.6 测试结果格式标准化
+所有测试产出最终汇聚为 `TestResult` 对象，作为后续分析的输入。
+
+```python
+class TestResult:
+    def __init__(self):
+        self.test_id = ""                 # 任务唯一 ID
+        self.test_name = ""               # 测试用例名称
+        self.environment = ""             # 执行环境类型
+        self.product_line = ""            # 目标产品线
+        self.status = "PENDING"           # PASSED, FAILED, TIMEOUT, ERROR
+        self.duration = 0.0               # 总耗时
+        self.start_time = None
+        self.end_time = None
+        
+        # 详细数据
+        self.logs = {}                    # { 'stdout': '...', 'dmesg': '...' }
+        self.assertions = []              # 存储 AssertionResult 列表
+        self.errors = []                  # 捕获的异常信息列表
+        self.metrics = {}                 # { 'avg_cpu': 15.5, 'peak_mem': 1024 }
+        
+        # 版本溯源
+        self.code_version = ""            # Git Commit Hash
+        self.config_id = ""               # 使用的配置文件版本
+```
+
+#### 1.3.7 核心 API 详细定义
+
+```python
+class TestOrchestrator:
+    def __init__(self, config: Dict[str, Any]):
+        """加载环境拓扑配置和认证凭据"""
+        pass
+    
+    def run_test_suite(self, suite_config: Dict[str, Any]) -> 'TestSuiteResult':
+        """
+        全自动化运行入口：
+        1. 环境预检与锁定
+        2. 部署资源
+        3. 循环执行用例并实时监控
+        4. 结果采集与标准化
+        5. 资源释放
+        """
+        pass
+    
+    def run_single_test(self, case_id: str, env_id: str) -> TestResult:
+        """针对特定环境运行单个测试案例"""
+        pass
+    
+    def get_environment_health(self) -> Dict[str, Any]:
+        """获取当前所有在线测试节点的状态报告"""
+        pass
+```
+
+---
+
+### 1.4 ResultAnalyzer 详细设计
+
+#### 1.4.1 功能概述
+ResultAnalyzer 是系统的故障诊断中心。它接收 TestOrchestrator 提供的标准化结果，通过语义分析、模式匹配和差分对比，挖掘失败背后的深层次原因。其核心价值在于将海量的、非结构化的文本日志转化为精准的“修复指令”。
+
+核心能力：
+- **日志语义化解析**：识别日志中的时间序列、模块分层和因果关系。
+- **故障特征提取**：提取崩溃堆栈 (Stack Trace)、内存地址和寄存器快照。
+- **多维度根因分析 (RCA)**：结合代码变更和历史数据，锁定故障发生的源头文件。
+- **自动化经验沉淀**：将经过人工确认的修复案例转化为知识向量。
+
+#### 1.4.2 日志解析规则引擎详细说明
+
+##### 1. 正则模式库
+系统内置了专门针对 C/C++ 嵌入式开发的故障模式库。
+
+```python
+class LogPattern:
+    name: str                      # 唯一标识
+    regex: str                     # 捕获正则
+    error_type: str                # 映射到错误分类
+    severity: str                  # 预警级别
+    action_hint: str               # 给 AI 代理的操作提示
+
+# 模式库示例
+ERROR_PATTERNS = [
+    LogPattern(
+        name="segfault",
+        regex=r"Segmentation fault \(SIGSEGV\) at 0x([0-9a-f]+)",
+        error_type="SyntaxError",
+        severity="CRITICAL",
+        action_hint="Check for null pointer dereference or out-of-bounds access."
+    ),
+    LogPattern(
+        name="double_free",
+        regex=r"double free or corruption",
+        error_type="ResourceError",
+        severity="HIGH",
+        action_hint="Investigate memory management logic in the affected block."
+    ),
+    LogPattern(
+        name="stack_overflow",
+        regex=r"stack smashing detected",
+        error_type="SyntaxError",
+        severity="CRITICAL",
+        action_hint="Verify buffer sizes and recursion depth."
+    )
+]
+```
+
+##### 2. 多行日志识别与聚合
+- **堆栈帧提取**：识别 `at <func_name> (<file>:<line>)` 格式的行并构建完整的调用链路。
+- **上下文回溯**：在检测到错误点时，自动向前保留 100 行 `DEBUG` 日志，以便分析故障前夕的系统状态。
+
+#### 1.4.3 错误分类系统详细说明
+
+错误被严格划分为以下分类，以指导后续的 Agent 策略：
+- **SYNTAX_ERROR (语法/运行时基本错误)**: 如段错误、指令异常、非法访问。
+- **LOGIC_ERROR (逻辑错误)**: 结果不符预期、业务断言失败。
+- **RESOURCE_ERROR (资源相关)**: 内存泄漏、FD (文件描述符) 耗尽、死锁。
+- **TIMEOUT_ERROR (超时)**: 进程由于锁定或死循环未能退出。
+- **ENVIRONMENT_ERROR (环境问题)**: 硬件掉线、依赖缺失、网络波动。
+
+#### 1.4.4 根因分析详细说明
+
+##### 1. 链式回溯
+- **代码映射**：将日志中的函数名与 `CodeAnalyzer` 生成的符号表关联。
+- **路径搜索**：基于 CFG (控制流图) 判断修改点是否在报错点的调用路径上。
+
+##### 2. 差分对比分析
+- **历史对齐**：选取同用例最近一次成功的运行日志作为“基准线”。
+- **差异提取**：利用 `diff` 算法提取失败日志中独有的输出行，排除掉正常的系统底噪日志。
+
+##### 3. RCA 报告结构
+```python
+class RootCauseAnalysis:
+    def __init__(self):
+        self.primary_reason = ""           # 核心原因摘要
+        self.suspected_files = []          # 嫌疑文件列表
+        self.evidence_snippets = []        # 证据片段
+        self.confidence_score = 0.0        # 置信度 (0.0-1.0)
+        self.is_regression = False         # 是否为回归问题
+```
+
+#### 1.4.5 经验知识提取详细说明
+每当一个失败的测试在代码修改后转为成功，ResultAnalyzer 会自动提取“修复对”。
+
+- **特征计算**：对失败日志进行脱敏处理，提取其指纹。
+- **存储方案**：将（故障指纹, 修复 Patch, 开发者备注）存入向量数据库，供未来遇到相似问题时进行 RAG (检索增强生成) 检索。
+
+#### 1.4.6 核心 API 详细定义
+
+```python
+class ResultAnalyzer:
+    def __init__(self, pattern_db_path: Optional[str] = None):
+        """加载自定义模式库"""
+        pass
+    
+    def analyze_failure(self, result: TestResult) -> RootCauseAnalysis:
+        """
+        主分析入口：
+        1. 模式匹配识别直接错误
+        2. 提取堆栈信息
+        3. 执行差分分析
+        4. 输出根因分析报告
+        """
+        pass
+    
+    def parse_raw_logs(self, raw_text: str) -> List[LogEntry]:
+        """将非结构化流解析为结构化 LogEntry 列表"""
+        pass
+    
+    def compare_runs(self, run_a: TestResult, run_b: TestResult) -> 'RunComparison':
+        """对比两次运行的日志和指标差异"""
+        pass
+```
+
+#### 1.4.7 数据结构详细定义
+
+```python
+class StructuredLogs:
+    def __init__(self, raw_text: str):
+        self.raw_text = raw_text
+        self.entries: List[LogEntry] = []
+        self.error_blocks: List[str] = []
+
+class CallFrame:
+    def __init__(self):
+        self.function_name = ""
+        self.file_name = ""
+        self.line_no = 0
+        self.address = "0x0"
+```
+
+#### 1.4.8 设计决策补充
+1. **为什么先使用规则引擎？**
+   - **效率**：处理 GB 级别的串口日志时，正则过滤比调用大模型便宜且快速。
+   - **确定性**：对于已知的 Assert 输出，规则能提供 100% 准确的分类。
+2. **多源数据融合**：
+   - 分析不仅看 `stdout`，必须结合硬件监控指标。例如：如果日志报错 `timeout` 同时指标显示 CPU 100%，则极大可能是死循环。
+3. **闭环反馈机制**：
+   - ResultAnalyzer 的输出直接作为 CodeModifier 的 Input Prompt 的一部分，实现真正的自愈闭环。
 
 ---
 
