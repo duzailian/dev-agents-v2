@@ -1,39 +1,313 @@
-# AI-Driven Firmware Intelligent Testing System - Work Plan
+# 生成AI驱动固件智能测试系统工作计划 (WORK_PLAN)
 
-## Phase 1: Foundation (Weeks 1-2)
--   Initialize project structure and Python environment.
--   Integrate Multi-Agent framework (AutoGen).
--   Define core data models using Pydantic.
--   Setup FastAPI for the API layer.
+## 1. 执行总结 (Executive Summary)
 
-## Phase 2: Core Execution (Weeks 3-4)
--   Implement `CodeAnalyzer` using `tree-sitter`.
--   Implement `TestOrchestrator` with QEMU support.
--   Develop basic `ResultAnalyzer` for log parsing.
--   Initial `CodeModifier` for applying diffs.
+本项目旨在开发一个基于生成式AI（LLM）的固件智能测试系统，通过多智能体（Multi-Agent）协作，实现固件代码的自动化分析、修改、测试和结果评估。
 
-## Phase 3: Knowledge Base (Weeks 5-6)
--   Deploy Qdrant vector database.
--   Implement `KnowledgeManager` with RAG retrieval.
--   Ingest initial documentation and historical Redmine logs.
--   Develop the multi-product line tagging logic.
+- **项目总周期**：约 6-9 个月
+- **团队配置**：3人核心团队
+- **阶段总数**：7个主要阶段（+ 后续持续优化阶段）
+- **总工作量估算**：1500-1800 小时
+- **核心目标**：构建一个能够自主循环“代码修改-测试执行-结果分析-决策优化”的闭环智能系统。
 
-## Phase 4: Multi-Environment & Scaling (Weeks 7-8)
--   Add support for BMC (Redfish/IPMI) and physical boards.
--   Optimize retrieval algorithms for different product lines.
--   Implement standard test results format (JSON/JUnit).
+---
 
-## Phase 5: External Integration (Weeks 9-10)
--   Implement Redmine API wrapper for issue tracking.
--   GitLab CI integration (Webhooks and Runner scripts).
--   Automate the "Bug Detected -> Ticket Created -> Agent Fix" workflow.
+## 2. 七个开发阶段详细描述
 
-## Phase 6: Orchestration & Loop (Weeks 11-12)
--   Refine Agent coordination logic (state machine/workflow).
--   Implement loop control and failure recovery.
--   Performance tuning for LLM token usage.
+### Phase 1：基础框架搭建
+**目标**：建立项目的骨架，完成基础架构选型和开发环境配置。
+- **工作量估算**：200-250 小时
+- **周期估算**：2-3 周
+- **人员配置**：Tech Lead, Backend Developer
 
-## Phase 7: Validation & Finalization (Weeks 13-14)
--   Full system integration testing.
--   Documentation completion.
--   Deployment scripts (Docker/K8s).
+**具体工作项**：
+1. **项目结构初始化**
+   - 建立标准 Python 项目目录结构
+   - 配置 Git 忽略文件及 pre-commit 钩子
+   - 初始化 README 和文档目录
+2. **依赖管理和虚拟环境配置**
+   - 使用 Poetry 或 Pipenv 管理依赖
+   - 配置 Dockerized 开发环境
+   - 设置不同环境的配置文件 (dev, test, prod)
+3. **多智能体框架集成**
+   - 集成 Microsoft AutoGen 框架
+   - 定义基础 Agent 类和通信模式
+   - 实现 LLM 客户端包装器（支持 OpenAI, Azure, Local LLM）
+4. **数据库设计和 Schema**
+   - 设计关系型数据库 (PostgreSQL) 用于存储任务、日志、元数据
+   - 编写 SQLAlchemy 模型
+   - 初始化 Alembic 迁移脚本
+5. **API 框架搭建**
+   - 使用 FastAPI 构建 RESTful API
+   - 实现基础身份验证和权限控制
+   - 集成 Swagger UI 文档
+6. **配置管理系统**
+   - 实现基于环境变量和 YAML 的配置加载
+   - 敏感信息加密存储方案
+
+**交付物清单**：
+- [ ] 可运行的项目基础代码库
+- [ ] 完整的开发环境配置文档
+- [ ] 初始数据库 Schema 及其 ER 图
+- [ ] 基础 API 接口定义
+
+---
+
+### Phase 2：核心执行引擎
+**目标**：实现系统最核心的固件分析、修改和测试自动化逻辑。
+- **工作量估算**：300-350 小时
+- **周期估算**：4-5 周
+- **人员配置**：Backend Developer, Tech Lead
+
+**具体工作项**：
+1. **CodeAnalyzer 实现**
+   - 基于 AST 的 C/C++ 代码解析
+   - 函数提取、调用图生成
+   - 代码片段上下文识别
+2. **CodeModifier 实现**
+   - 基于 LLM 的代码修改逻辑
+   - 差异对比（Diff）生成
+   - 语法正确性初步校验
+3. **TestOrchestrator 实现**
+   - QEMU 实例生命周期管理
+   - 测试脚本自动注入与执行
+   - 执行过程实时监控
+4. **ResultAnalyzer 实现**
+   - 串口日志/系统日志解析
+   - 关键错误模式识别
+   - 测试通过/失败判定逻辑
+5. **工具函数库 (Function Calling)**
+   - 定义 Agent 可调用的标准工具接口
+   - 实现文件读写、编译触发等基础工具
+6. **核心工作流实现**
+   - 实现“修改-编译-测试-分析-反馈”闭环
+   - 处理工作流中的异常中断和重试
+
+**交付物清单**：
+- [ ] CodeAnalyzer/Modifier 模块代码
+- [ ] QEMU 测试集成模块
+- [ ] 核心工作流原型演示
+
+---
+
+### Phase 3：知识库系统
+**目标**：通过 RAG 技术为 Agent 提供历史经验和领域知识支持。
+- **工作量估算**：250-300 小时
+- **周期估算**：3-4 周
+- **人员配置**：Backend Developer
+
+**具体工作项**：
+1. **向量 DB 集成**
+   - 部署并配置 Qdrant 向量数据库
+   - 设计向量存储 Schema（Metadata 设计）
+2. **KnowledgeManager 实现**
+   - 知识条目的 CRUD 操作
+   - 文本向量化（Embedding）处理流程
+3. **RAG 检索引擎**
+   - 实现语义搜索接口
+   - 结合元数据过滤的混合检索
+4. **产品线标签系统**
+   - 设计产品线、固件版本、模块标签
+   - 实现基于标签的知识隔离
+5. **优先级检索算法**
+   - 根据测试上下文自动调整检索权重
+   - 实现重排序（Rerank）逻辑
+6. **知识库初始化脚本**
+   - 历史测试报告自动化导入工具
+   - 专家经验手动录入界面
+
+**交付物清单**：
+- [ ] 运行中的 Qdrant 实例
+- [ ] 知识检索 API 接口
+- [ ] 已导入初步数据的知识库
+
+---
+
+### Phase 4：多环境和多产品线支持
+**目标**：扩展系统兼容性，使其能处理不同类型的固件和物理/虚拟硬件。
+- **工作量估算**：200-250 小时
+- **周期估算**：3-4 周
+- **人员配置**：Backend Developer, DevOps
+
+**具体工作项**：
+1. **多环境测试执行支持**
+   - 实现物理板卡（BMC、树莓派）的连接驱动
+   - Windows 环境兼容性适配
+2. **产品线适配 (ARM TF/RTOS/UEFI)**
+   - 不同固件类型的编译脚本模板化
+   - 针对不同产品线的引导流程适配
+3. **产品线感知的知识库检索**
+   - 检索时自动附带产品线约束
+   - 防止跨产品线的错误经验干扰
+4. **多产品线工作流编排**
+   - 配置化的工作流引擎，支持不同产品线的差异步骤
+
+**交付物清单**：
+- [ ] 支持多硬件环境的驱动层
+- [ ] ARM TF/RTOS/UEFI 适配案例
+- [ ] 环境配置文件模板集
+
+---
+
+### Phase 5：外部系统集成
+**目标**：连接现有的研发流程工具，实现数据互通。
+- **工作量估算**：150-200 小时
+- **周期估算**：2-3 周
+- **人员配置**：DevOps
+
+**具体工作项**：
+1. **Redmine API 集成**
+   - 实现问题单自动读取与状态更新
+   - 测试结果反向填充至 Redmine
+2. **Redmine 历史数据导入**
+   - 抽取历史 Bug 描述和修复方案，注入知识库
+3. **GitLab CI 流程集成**
+   - 实现 GitLab Webhook 触发测试
+   - 将测试结果反馈至 GitLab Pipeline
+4. **Git 操作模块**
+   - 自动拉取代码、创建分支、提交 Agent 修改后的代码
+
+**交付物清单**：
+- [ ] Redmine/GitLab 集成模块
+- [ ] 自动化数据同步任务
+
+---
+
+### Phase 6：多智能体协调
+**目标**：优化 Agent 间的协作效率和决策准确性。
+- **工作量估算**：200-250 小时
+- **周期估算**：3-4 周
+- **人员配置**：Tech Lead
+
+**具体工作项**：
+1. **Agent 定义和编排**
+   - 细化分析专家、编码专家、测试专家、审核专家职责
+   - 配置 AutoGen 的 GroupChat 或 SequentialChat
+2. **工作流编排引擎**
+   - 实现复杂逻辑的分支切换
+   - 定义状态机管理长时运行任务
+3. **决策逻辑和循环控制**
+   - 引入 Self-Reflection 机制减少幻觉
+   - 设置最大循环上限和退出判定条件
+4. **并发管理**
+   - 支持多个测试任务并行执行
+   - 硬件资源锁管理
+5. **容错框架**
+   - Agent 调用失败后的自动降级策略
+   - 系统崩溃后的断点续传机制
+
+**交付物清单**：
+- [ ] 优化的多 Agent 协作模型
+- [ ] 任务调度与并发控制系统
+
+---
+
+### Phase 7：测试、优化和文档
+**目标**：确保系统稳定性，完成交付准备。
+- **工作量估算**：150-200 小时
+- **周期估算**：2-3 周
+- **人员配置**：QA, All
+
+**具体工作项**：
+1. **单元测试**
+   - 编写 pytest 测试用例
+   - 确保核心逻辑覆盖率 ≥80%
+2. **集成和性能测试**
+   - 端到端全流程压测
+   - 向量检索延迟测试
+3. **性能优化**
+   - 数据库索引优化
+   - 并发处理性能调优
+4. **可靠性增强**
+   - 完善日志追溯系统
+   - 异常报警机制
+5. **完整文档集**
+   - 架构说明书、用户手册、部署指南、API 文档
+6. **示例和教程**
+   - 提供 2-3 个典型固件 Bug 修复示例
+
+**交付物清单**：
+- [ ] 测试报告（覆盖率、性能参数）
+- [ ] 全套技术文档
+- [ ] 演示视频或教程
+
+---
+
+## 3. 关键依赖关系
+
+1.  **Phase 1 (基础)** 是所有后续工作的先导。
+2.  **Phase 2 (执行)** 完成后，**Phase 4 (多环境)** 和 **Phase 6 (协调)** 才能开展。
+3.  **Phase 3 (知识库)** 为 **Phase 4** 和 **Phase 6** 提供数据检索基础。
+4.  **Phase 5 (集成)** 为 **Phase 6** 提供外部触发源和数据输出端。
+5.  **Phase 7 (测试)** 依赖于前六个阶段的阶段性交付。
+
+---
+
+## 4. 风险识别表
+
+| 风险 | 影响 | 概率 | 缓解措施 |
+|------|------|------|---------|
+| LLM API 延迟或不稳定 | 代码修改功能受阻 | 中 | 引入本地模型 (Ollama/vLLM) 作为 fallback、增加缓存和指数退避重试机制 |
+| 向量 DB 性能不达预期 | 检索响应缓慢 | 低 | 预先进行性能压测、优化索引配置、根据业务分库分表 |
+| 多环境兼容性问题 | 测试执行频繁失败 | 中 | 建立标准化的 Docker 运行镜像、增加 Mock 模式进行逻辑验证 |
+| 知识库数据质量差 | RAG 检索产生干扰 | 中 | 建立数据清洗流水线、引入专家人工审核确认机制 |
+| 固件编译时间过长 | 影响 Agent 迭代速度 | 高 | 引入增量编译技术、缓存编译中间产物 |
+
+---
+
+## 5. 成功标准 (Acceptance Criteria)
+
+- [ ] 所有核心功能（分析、修改、测试、分析、检索）实现并通过测试。
+- [ ] 成功适配并验证 ≥3 个产品线（ARM TF、RTOS、UEFI）。
+- [ ] 成功在 ≥3 个测试环境（QEMU、目标板、树莓派）执行任务。
+- [ ] Redmine 任务同步和 GitLab CI 流程集成正常运作。
+- [ ] 知识库预装 ≥100 个高质量结构化经验单元。
+- [ ] 核心代码测试覆盖率 ≥80%。
+- [ ] API 非 AI 耗时响应时间 <1 秒（99分位）。
+- [ ] 系统整体月度可用性 ≥99.5%。
+
+---
+
+## 6. 人员分配建议
+
+- **Tech Lead (1人)**：
+    - 负责整体架构设计、关键技术选型（如 AutoGen 集成）。
+    - 深度参与 Phase 1 和 Phase 6。
+    - 负责代码审查和核心难点攻关。
+- **Backend Developer (1人)**：
+    - 负责 Phase 2、Phase 3、Phase 4 的具体实现。
+    - 编写核心业务逻辑、数据库交互及 AI 工具函数。
+- **DevOps/QA (1人)**：
+    - 负责 Phase 5 的外部系统对接。
+    - 负责 Phase 7 的测试环境搭建、自动化测试编写及文档整理。
+    - 管理 CI/CD 流水线。
+
+---
+
+## 7. 进度跟踪模板
+
+### [Phase X：阶段名称] 跟踪表
+- **状态**：🔴 未开始 | 🟡 进行中 | 🟢 已完成 | ⚪ 已延期
+- **完成度**：XX%
+- **已完成工作清单**：
+    - [x] 工作项 1
+    - [x] 工作项 2
+- **当前问题与风险**：
+    1. 描述问题 A
+    2. 描述风险 B
+- **下阶段计划**：
+    - 计划项 1
+    - 计划项 2
+
+---
+
+## 8. 技术栈参考
+
+- **多智能体框架**：AutoGen
+- **向量数据库**：Qdrant
+- **Web 框架**：FastAPI
+- **ORM**：SQLAlchemy / Alembic
+- **测试框架**：pytest
+- **日志管理**：loguru
+- **外部集成**：python-redmine, GitPython
+- **LLM 调用**：LangChain / OpenAI SDK
