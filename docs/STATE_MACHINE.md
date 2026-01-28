@@ -356,8 +356,103 @@ flowchart TD
 
 ---
 
-## 6. 循环控制机制
+## 6. 循环控制机制与实现伪代码
 
-> 说明：本节之后（错误恢复流程、伪代码示例等）为本文关键内容的一部分。
-> 若你在阅读时发现文档在此处意外截断，请以仓库最新版本为准。
+### 6.1 核心控制逻辑伪代码
+
+以下伪代码描述了基于状态机的自动化闭环控制逻辑，实际实现建议采用 LangGraph。
+
+```python
+class StateMachineOrchestrator:
+    async def run_task(self, task_request):
+        # 1. 初始化上下文
+        context = self.initialize_context(task_request)
+        current_state = "INIT"
+        
+        # 2. 状态机主循环
+        while current_state not in ["SUCCESS", "FAILURE", "ABORTED"]:
+            try:
+                # 记录状态转移日志
+                self.log_transition(current_state)
+                
+                if current_state == "INIT":
+                    current_state = await self.handle_init(context)
+                    
+                elif current_state == "CODE_ANALYSIS":
+                    # 调用 CodeAgent 进行分析
+                    analysis = await agents.code_agent.process(
+                        Task(type="analyze_code", input=context.last_failure)
+                    )
+                    context.analysis = analysis
+                    current_state = "PATCH_GENERATION" if analysis.ok else "ERROR_RECOVERY"
+                    
+                elif current_state == "PATCH_GENERATION":
+                    # 生成补丁
+                    patch = await agents.code_agent.process(
+                        Task(type="generate_patch", input=context.analysis)
+                    )
+                    context.current_patch = patch
+                    current_state = "PATCH_APPLY" if patch.valid else "ERROR_RECOVERY"
+                    
+                elif current_state == "PATCH_APPLY":
+                    # 应用补丁并创建快照
+                    success = await self.workspace.apply_patch(context.current_patch)
+                    current_state = "BUILD_RUN" if success else "ERROR_RECOVERY"
+                    
+                elif current_state == "BUILD_RUN":
+                    # 执行构建
+                    build_result = await self.executor.run_build()
+                    context.last_build = build_result
+                    current_state = "TEST_RUN" if build_result.success else "ERROR_RECOVERY"
+                    
+                elif current_state == "TEST_RUN":
+                    # 执行测试环境启动与用例运行
+                    test_result = await agents.test_agent.process(
+                        Task(type="run_test", input=context.test_profile)
+                    )
+                    context.last_test = test_result
+                    current_state = "RESULT_ANALYSIS"
+                    
+                elif current_state == "RESULT_ANALYSIS":
+                    # 分析结果并决定下一步
+                    decision = await agents.analysis_agent.process(
+                        Task(type="analyze_result", input=context.last_test)
+                    )
+                    context.last_decision = decision
+                    current_state = "CONVERGENCE_CHECK"
+                    
+                elif current_state == "CONVERGENCE_CHECK":
+                    # 检查是否达成目标或超过最大迭代次数
+                    if context.last_decision.is_success:
+                        current_state = "SUCCESS"
+                    elif context.iteration_count >= context.max_iterations:
+                        current_state = "FAILURE"
+                    else:
+                        context.iteration_count += 1
+                        current_state = "CODE_ANALYSIS"
+                        
+                elif current_state == "ERROR_RECOVERY":
+                    # 错误恢复逻辑
+                    current_state = await self.handle_error_recovery(context)
+                    
+            except Exception as e:
+                context.last_error = e
+                current_state = "ERROR_RECOVERY"
+                
+        # 3. 输出最终报告
+        return await self.finalize(context)
+
+    async def handle_error_recovery(self, context):
+        # 简单的重试与回滚策略
+        error_type = self.classify_error(context.last_error)
+        if context.retry_count[error_type] < 3:
+            context.retry_count[error_type] += 1
+            return self.get_retry_state(error_type)
+        else:
+            return "FAILURE"
+```
+
+---
+
+> 说明：本设计旨在为 Phase 2 提供清晰的逻辑指导。实现时可利用 LangGraph 的 `StateGraph` 对上述逻辑进行节点（Nodes）与边（Edges）的定义。
 
