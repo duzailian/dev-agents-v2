@@ -164,6 +164,28 @@ class CodeAnalyzer:
 
 **接口定义**：
 ```python
+from dataclasses import dataclass
+from enum import Enum
+from typing import List, Dict, Any, Optional
+
+class RiskLevel(Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+@dataclass
+class RiskAssessment:
+    """代码修改风险评估数据模型"""
+    plan_id: str
+    affected_files_count: int
+    total_lines_added: int
+    total_lines_removed: int
+    impact_scope: List[str]  # 受影响的功能模块或路径
+    security_level: RiskLevel
+    risk_score: float        # 0.0 - 1.0 的量化分值
+    warnings: List[str]      # 具体的风险提示信息
+
 @dataclass
 class ModificationPlan:
     plan_id: str
@@ -172,6 +194,7 @@ class ModificationPlan:
     risk_level: str
     dependencies: List[str]
     rollback_info: Dict[str, Any]
+    risk_assessment: Optional[RiskAssessment] = None
 
 @dataclass
 class ModificationResult:
@@ -184,35 +207,46 @@ class ModificationResult:
 
 class CodeModifier:
     """代码修改器主接口"""
-    
+
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.ai_model = self._init_ai_model()
         self.git_handler = self._init_git_handler()
         self.patch_generator = self._init_patch_generator()
-        
+
     async def generate_modifications(self,
                                    analysis_result: AnalysisResult,
                                    requirements: Dict[str, Any]) -> List[ModificationPlan]:
         """生成修改方案"""
         pass
-        
+
     async def apply_modifications(self,
                                 plans: List[ModificationPlan],
                                 dry_run: bool = False) -> ModificationResult:
         """应用代码修改"""
         pass
-        
-    async def validate_changes(self,
-                              changes: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """验证修改的安全性"""
+
+    async def diff_preview(self, plans: List[ModificationPlan]) -> List[Dict[str, Any]]:
+        """生成修改预览，返回修改前后对比"""
         pass
-        
+
+    async def validate_patch(self, patch_content: str) -> Dict[str, Any]:
+        """补丁安全性校验，检查敏感API和权限操作"""
+        pass
+
     async def create_patch(self,
                           file_path: str,
                           original_content: str,
                           modified_content: str) -> str:
         """创建Git patch文件"""
+        pass
+
+    async def rollback(self, plan_id: str) -> bool:
+        """基于快照或Git记录撤销修改"""
+        pass
+
+    async def request_approval(self, plan_id: str) -> bool:
+        """应用补丁前的人工审批逻辑"""
         pass
 ```
 
@@ -221,6 +255,154 @@ class CodeModifier:
 - 集成编译检查确保修改后代码可编译
 - 支持原子性操作，要么全部成功要么全部回滚
 - 提供详细的修改日志和影响分析
+
+#### 1.2.1 安全修改流程与审批机制
+
+在自动修复循环中，为防止 AI 生成不当修改导致系统崩溃或安全漏洞，CodeModifier 引入了标准化的预览与审批流。
+
+**1. 补丁应用生命周期**
+1. **生成 (Generation)**: CodeAgent 生成初步的修改方案。
+2. **评估 (Assessment)**: 自动调用风险评估模块生成 `RiskAssessment` 报告。
+3. **预览 (Preview)**: 生成统一差分格式 (Unified Diff) 供审计。
+4. **审批 (Approval)**: 根据风险等级决定是自动执行还是等待人工干预。
+5. **执行 (Execution)**: 创建快照并应用补丁。
+6. **验证 (Verification)**: 执行编译和冒烟测试。
+
+**2. Diff 预览技术细节**
+`diff_preview` 接口返回的数据结构不仅包含代码差异，还包含上下文语义：
+- **语义摘要**: 描述每个 Hunk 的修改意图（如“修复数组越界”、“更新配置参数”）。
+- **影响分析**: 识别修改涉及的函数调用链，预测可能产生的侧面影响。
+- **冲突检测**: 实时对比当前仓库状态，识别是否存在 Patch 冲突。
+
+**3. 审批工作流设计**
+审批逻辑支持灵活配置。对于固件开发，默认策略如下：
+- **低风险**: 修改注释、增加测试用例、不涉及逻辑的重构 -> 自动审批。
+- **中风险**: 业务逻辑修改、新功能添加 -> 需要 1 名开发人员审批。
+- **高风险**: 修改 `common` 库、修改中断处理、修改内存分配器 -> 需要 2 名以上专家（含安全专家）审批。
+
+#### 1.2.2 风险评估系统设计
+
+风险评估模块是 CodeModifier 的核心守门人，它通过静态和动态特征量化补丁风险。
+
+**1. 风险评分维度 (Risk Scoring Metrics)**
+| 维度 | 检查项 | 权重 | 说明 |
+| :--- | :--- | :--- | :--- |
+| **规模 (Scale)** | 变更行数/文件数 | 15% | 大范围修改通常意味着更高的不确定性 |
+| **位置 (Location)** | 关键路径/目录匹配 | 30% | 修改驱动、内核、加密模块风险极高 |
+| **API 安全 (API)** | 禁止/危险函数调用 | 25% | 检查补丁是否引入了不安全的 C 标准库函数 |
+| **复杂度 (Complexity)** | 圈复杂度增量 | 20% | 逻辑过于复杂的补丁难以维护且易藏 Bug |
+| **合规性 (Compliance)** | 编码规范违反项 | 10% | 是否符合 MISRA C 或公司内部规范 |
+
+**2. 自动阻断阈值**
+系统预设了 `CRITICAL_RISK_THRESHOLD = 0.8`。任何评估分数超过此值的补丁将被直接拦截并标记为 `Rejected`，要求 Agent 重新设计方案。
+
+**3. 风险评估流程图**
+```mermaid
+graph TD
+    A[开始风险评估] --> B{解析补丁内容}
+    B --> C[统计变更规模]
+    B --> D[识别敏感API]
+    B --> E[分析修改路径]
+    C --> F[计算加权风险分数]
+    D --> F
+    E --> F
+    F --> G{分数 > 阈值?}
+    G -- 是 --> H[触发人工审批]
+    G -- 否 --> I[自动审批通过]
+    H --> J[更新风险等级]
+    I --> J
+    J --> K[返回RiskAssessment结果]
+```
+
+#### 1.2.3 自动化安全校验点
+
+`validate_patch()` 方法在补丁应用前执行深度扫描，确保补丁本身不含有“毒素”。
+
+**1. 敏感 API 扫描 (Banned API Checker)**
+- **强制检查项**: `strcpy`, `strcat`, `gets`, `sprintf`, `vsprintf` 等。
+- **建议替代方案**: 自动提示将 `strcpy` 替换为 `strncpy` 或更安全的库函数。
+
+**2. 权限与敏感操作校验**
+- **文件权限**: 禁止在补丁中直接调用 `chmod 777` 或类似提权操作。
+- **网络访问**: 检查是否引入了未经授权的网络套接字创建逻辑。
+- **硬编码密钥**: 扫描补丁是否包含硬编码的密码、Token 或加密密钥。
+
+**3. 资源管理检查**
+- **内存对齐**: 在固件开发中，检查修改后的数据结构是否破坏了内存对齐要求。
+- **锁平衡**: 如果补丁涉及互斥锁 (Mutex) 或信号量，校验锁定与释放逻辑是否成对出现，防止死锁。
+
+#### 1.2.4 原子化操作与回滚保障
+
+为应对固件测试中常见的环境崩溃问题，CodeModifier 实现了严格的事务性保障。
+
+**1. 快照与备份策略**
+- **Git 原子提交**: 利用 Git 暂存区和分支机制。补丁应用在临时分支上，通过测试后再合并。
+- **物理备份**: 对于非 Git 追踪的配置文件，在修改前执行 `tar` 压缩备份至指定安全位置。
+- **数据库快照**: 如果修改涉及配置数据库，执行 `SQL Dump` 快照。
+
+**2. 交互时序图**
+```mermaid
+sequenceDiagram
+    participant Agent as CodeAgent
+    participant CM as CodeModifier
+    participant Auditor as Human Auditor
+    participant Repo as Repository
+
+    Agent->>CM: generate_modifications()
+    CM->>CM: Risk Assessment
+    CM->>CM: validate_patch()
+    
+    alt risk_score > threshold
+        CM->>Auditor: request_approval(plan_id)
+        Auditor-->>CM: approved / rejected
+    else risk_score <= threshold
+        CM->>CM: Auto-approve
+    end
+    
+    CM->>Repo: create_snapshot()
+    CM->>Repo: apply_patches()
+    
+    alt build_failed OR test_failed
+        CM->>Repo: rollback(plan_id)
+    else success
+        CM->>Repo: commit_changes()
+    end
+```
+
+**3. 回滚执行路径**
+`rollback()` 方法支持以下两种回滚模式：
+- **Soft Rollback**: 通过 `git checkout` 或 `git revert` 撤销代码层面的修改。
+- **Hard Rollback**: 直接从磁盘备份恢复物理文件，并重置环境状态（如数据库、配置文件）。
+
+#### 1.2.5 代码修改安全性原则与规范
+
+为指导 Agent 生成更高质量的补丁，我们定义了以下安全性原则。
+
+**1. 最小变更原则 (Least Change Principle)**
+- **聚焦补丁**: 严禁在修复一个 Bug 的同时进行无关的代码重构。
+- **限制范围**: 修改范围应限制在受影响的函数内部，除非必须通过接口变更解决。
+
+**2. 防御性编程规范**
+- **输入校验**: 所有从外部读取的参数（如硬件寄存器、网络包）在处理前必须校验合法性。
+- **溢出预防**: 涉及算术运算的地方应优先使用带溢出检测的宏或库。
+- **指针安全**: 在解引用前必须显式进行非空检查。
+
+**3. 资源生命周期管理**
+- **配对原则**: 所有的 `malloc` 必须有对应的 `free`，所有的 `lock` 必须有对应的 `unlock`。
+- **错误路径清理**: 在函数的错误返回分支中，必须正确释放已申请的资源。
+
+#### 1.2.6 典型安全校验场景示例与审计规范
+
+**1. 典型校验场景**
+- **场景 A：处理缓冲区溢出**: Agent 识别出 `strcpy` 导致潜在溢出。方案：替换为 `strncpy` 且手动补齐 `\0`。校验：`validate_patch` 检查是否正确处理了 `N-1` 长度及截断情况。
+- **场景 B：修改敏感配置**: 修改 SSH 端口配置。方案：更新配置文件解析逻辑。校验：`RiskAssessment` 识别为 `High` 风险，强制触发人工审批。
+
+**2. 审计日志规范**
+每次补丁应用均需记录审计日志，包含：
+- **操作流水**: 时间戳、操作员 ID、计划 ID。
+- **变更证据**: 修改前后的代码片段、Patch 文件。
+- **评估报告**: 风险分值、警告信息、审批记录。
+- **执行结果**: 编译状态、冒烟测试结果、回滚触发原因（如有）。
 
 ### 1.3 ResultAnalyzer（结果分析器）
 
