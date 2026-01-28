@@ -41,6 +41,482 @@
 
 ---
 
+## 3. LangGraph状态机详细设计
+
+> 本章节详细描述基于LangGraph框架实现的状态机设计，包括收敛判定逻辑的量化标准。
+
+### 3.1 LangGraph架构概述
+
+LangGraph是一个用于构建有状态、多actor应用的框架，非常适合实现本系统的"AI修改代码 → 启动测试 → 收集结果 → 分析决策 → 继续或收敛退出"的闭环流程。
+
+**核心组件：**
+
+- **Graph（图）**：定义状态转换的有向图
+- **Node（节点）**：执行特定任务的函数（如代码分析、测试执行等）
+- **State（状态）**：在节点间传递的共享状态对象
+- **Edge（边）**：定义节点间的转换条件
+
+### 3.2 状态机状态定义
+
+基于LangGraph的状态机包含以下节点：
+
+| 状态节点 | 功能描述 | 输入 | 输出 |
+|---------|---------|------|------|
+| `code_analysis` | 分析问题与生成修改方案 | 日志、代码、任务描述 | analysis、patch_plan |
+| `patch_generation` | 生成补丁（diff）并做静态检查 | patch_plan | patch、risk_assessment |
+| `patch_apply` | 应用补丁、解决冲突、生成回滚快照 | patch | 更新后的工作区 |
+| `build_run` | 编译/链接/打包 | 代码 | build_result |
+| `test_run` | 执行测试 | 环境、用例 | raw_logs、test_exit_code |
+| `result_collection` | 采集与结构化结果 | 日志、产物 | test_result、metrics |
+| `result_analysis` | 判断通过/失败/回归，生成下一步策略 | test_result、analysis | decision |
+| `convergence_check` | 收敛判断/迭代控制 | decision、历史记录 | continue? |
+
+### 3.3 共享状态模型
+
+```python
+from typing import TypedDict, List, Dict, Any, Optional
+from enum import Enum
+
+class ConvergenceType(Enum):
+    """收敛判定类型"""
+    SUCCESS = "success"
+    CONVERGED_WITH_IMPROVEMENT = "converged_with_improvement"
+    PLATEAUED = "plateaued"
+    FAILURE = "failure"
+    TIMEOUT = "timeout"
+
+class ConvergenceCriteria(TypedDict):
+    """收敛判断标准"""
+    target_pass_rate: float           # 目标通过率（100%）
+    failure_rate_threshold: float     # 失败率阈值（70%）
+    min_improvement_percent: float    # 最小改进度（5%）
+    plateau_improvement_threshold: float  # 平台期改进阈值（1%）
+    min_stable_iterations: int        # 最小稳定迭代次数（2）
+    stability_variance_threshold: float  # 稳定性方差阈值（2%）
+    min_iterations_for_plateau: int   # 平台期判定的最小迭代次数（7）
+    min_iterations_for_slow_improvement: int  # 改进缓慢判定的最小迭代次数（5）
+    consecutive_failure_threshold: int  # 连续失败阈值（2）
+
+class State(TypedDict):
+    """LangGraph共享状态"""
+    # 任务信息
+    task_id: str
+    iteration_index: int
+    max_iterations: int
+
+    # 收敛判定
+    convergence_criteria: ConvergenceCriteria
+    pass_counts: List[int]
+    total_counts: List[int]
+
+    # 分析与补丁
+    analysis: Optional[Dict[str, Any]]
+    patch_plan: Optional[Dict[str, Any]]
+    patch: Optional[str]
+
+    # 构建与测试
+    build_result: Optional[Dict[str, Any]]
+    test_result: Optional[Dict[str, Any]]
+    metrics: Optional[Dict[str, Any]]
+
+    # 决策与追踪
+    decision: Optional[Dict[str, Any]]
+    decision_trace: List[Dict[str, Any]]
+    convergence_type: Optional[str]
+    convergence_reason: Optional[str]
+```
+
+### 3.4 收敛判定逻辑
+
+#### 3.4.1 ConvergenceCriteria数据模型
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class ConvergenceCriteria:
+    """收敛判断标准"""
+    # 目标阈值
+    target_pass_rate: float = 1.0            # 目标通过率（100%，可配置）
+    failure_rate_threshold: float = 0.70      # 失败率阈值（70%）
+
+    # 改进度指标
+    min_improvement_percent: float = 0.05    # 最小改进度（5%）
+    plateau_improvement_threshold: float = 0.01  # 平台期改进阈值（1%）
+
+    # 稳定度指标
+    min_stable_iterations: int = 2           # 最小稳定迭代次数
+    stability_variance_threshold: float = 0.02  # 稳定性方差阈值（2%）
+
+    # 迭代控制
+    min_iterations_for_plateau: int = 7       # 平台期判定的最小迭代次数
+    min_iterations_for_slow_improvement: int = 5  # 改进缓慢判定的最小迭代次数
+    consecutive_failure_threshold: int = 2    # 连续失败阈值
+
+# 预定义收敛标准
+STANDARD_CRITERIA = ConvergenceCriteria(
+    target_pass_rate=1.0,
+    failure_rate_threshold=0.70,
+    min_improvement_percent=0.05,
+    plateau_improvement_threshold=0.01,
+    min_stable_iterations=2,
+    stability_variance_threshold=0.02,
+    min_iterations_for_plateau=7,
+    min_iterations_for_slow_improvement=5,
+    consecutive_failure_threshold=2
+)
+```
+
+#### 3.4.2 收敛度评分算法
+
+**1. 改进度计算**
+
+```python
+def calculate_improvement(previous_pass_count: int, current_pass_count: int,
+                         previous_total: int, current_total: int) -> float:
+    """
+    计算改进度（通过用例数增长的百分比）
+
+    Args:
+        previous_pass_count: 前一次迭代通过用例数
+        current_pass_count: 当前迭代通过用例数
+        previous_total: 前一次迭代总用例数
+        current_total: 当前迭代总用例数
+
+    Returns:
+        改进度（百分比，0-1之间）
+    """
+    # 计算通过率
+    prev_pass_rate = previous_pass_count / max(previous_total, 1)
+    curr_pass_rate = current_pass_count / max(current_total, 1)
+
+    # 计算改进度
+    improvement = curr_pass_rate - prev_pass_rate
+
+    # 如果用例总数变化，需要标准化
+    if current_total != previous_total:
+        absolute_improvement = current_pass_count - previous_pass_count
+        improvement = absolute_improvement / max(current_total, previous_total)
+
+    return max(0.0, improvement)  # 只计算正向改进
+```
+
+**2. 平均改进度计算**
+
+```python
+def calculate_average_improvement(pass_counts: List[int],
+                                 total_counts: List[int],
+                                 window: int = 3) -> float:
+    """
+    计算滑动窗口内的平均改进度
+
+    Args:
+        pass_counts: 各次迭代的通过用例数列表
+        total_counts: 各次迭代的总用例数列表
+        window: 滑动窗口大小
+
+    Returns:
+        平均改进度
+    """
+    if len(pass_counts) < 2:
+        return 0.0
+
+    improvements = []
+    for i in range(1, min(window + 1, len(pass_counts))):
+        improvement = calculate_improvement(
+            pass_counts[i - 1], pass_counts[i],
+            total_counts[i - 1], total_counts[i]
+        )
+        improvements.append(improvement)
+
+    return sum(improvements) / len(improvements) if improvements else 0.0
+```
+
+**3. 稳定度计算**
+
+```python
+import statistics
+
+def calculate_stability(pass_rates: List[float]) -> float:
+    """
+    计算稳定度（通过率的方差）
+
+    Args:
+        pass_rates: 各次迭代的通过率列表
+
+    Returns:
+        稳定度（方差值，越小越稳定）
+    """
+    if len(pass_rates) < 2:
+        return 0.0
+
+    return statistics.variance(pass_rates)
+```
+
+**4. 收敛判定**
+
+```python
+def determine_convergence(
+    pass_counts: List[int],
+    total_counts: List[int],
+    criteria: ConvergenceCriteria,
+    current_iteration: int,
+    max_iterations: int
+) -> tuple[Optional[ConvergenceType], str]:
+    """
+    判定收敛状态
+
+    Returns:
+        (收敛类型, 判定原因)
+    """
+    # 计算当前通过率
+    current_pass_count = pass_counts[-1]
+    current_total = total_counts[-1]
+    current_pass_rate = current_pass_count / max(current_total, 1)
+
+    # 计算失败率
+    failure_rate = 1.0 - current_pass_rate
+
+    # 1. SUCCESS 判定：通过率达到目标且连续稳定
+    if current_pass_rate >= criteria.target_pass_rate:
+        # 检查稳定性
+        if len(pass_counts) >= criteria.min_stable_iterations + 1:
+            recent_rates = [pc / max(tc, 1) for pc, tc in
+                           zip(pass_counts[-criteria.min_stable_iterations:],
+                               total_counts[-criteria.min_stable_iterations:])]
+            stability = calculate_stability(recent_rates)
+
+            if stability <= criteria.stability_variance_threshold:
+                return (ConvergenceType.SUCCESS,
+                       f"通过率 {current_pass_rate:.1%} 达到目标且连续{criteria.min_stable_iterations}次迭代稳定")
+
+    # 2. FAILURE 判定：失败率过高且连续无改进
+    if failure_rate > criteria.failure_rate_threshold:
+        if len(pass_counts) >= criteria.consecutive_failure_threshold + 1:
+            # 检查连续迭代是否有改进
+            recent_improvements = []
+            for i in range(1, criteria.consecutive_failure_threshold + 1):
+                if len(pass_counts) > i:
+                    improvement = calculate_improvement(
+                        pass_counts[-i - 1], pass_counts[-i],
+                        total_counts[-i - 1], total_counts[-i]
+                    )
+                    recent_improvements.append(improvement)
+
+            if all(imp < criteria.min_improvement_percent
+                   for imp in recent_improvements):
+                return (ConvergenceType.FAILURE,
+                       f"失败率 {failure_rate:.1%} 超过阈值且连续{criteria.consecutive_failure_threshold}次迭代无改进")
+
+    # 3. TIMEOUT 判定
+    if current_iteration >= max_iterations:
+        return (ConvergenceType.TIMEOUT,
+               f"达到最大迭代次数 {max_iterations}")
+
+    # 4. PLATEAUED 判定：平均改进度小于阈值且已迭代足够次数
+    if current_iteration >= criteria.min_iterations_for_plateau:
+        avg_improvement = calculate_average_improvement(
+            pass_counts, total_counts, window=3
+        )
+        if avg_improvement < criteria.plateau_improvement_threshold:
+            return (ConvergenceType.PLATEAUED,
+                   f"平均改进度 {avg_improvement:.1%} < {criteria.plateau_improvement_threshold:.1%} 且已迭代{current_iteration}次（建议人工介入）")
+
+    # 5. 改进缓慢判定
+    if current_iteration >= criteria.min_iterations_for_slow_improvement:
+        avg_improvement = calculate_average_improvement(
+            pass_counts, total_counts, window=3
+        )
+        if avg_improvement < criteria.min_improvement_percent:
+            return (ConvergenceType.CONVERGED_WITH_IMPROVEMENT,
+                   f"平均改进度 {avg_improvement:.1%} < {criteria.min_improvement_percent:.1%} 且已迭代{current_iteration}次，但已改进至最优")
+
+    # 未收敛，继续迭代
+    return (None, "继续迭代")
+```
+
+#### 3.4.3 多种终止条件定义
+
+| 终止条件 | 判定规则 | 动作 | 典型场景 |
+|---------|---------|------|---------|
+| **SUCCESS** | 通过率 ≥ 目标 && 连续 2 次迭代稳定（方差 ≤ 2%） | 转移到终止状态 | 目标用例全部通过，结果稳定 |
+| **CONVERGED_WITH_IMPROVEMENT** | 通过率未达目标 && 平均改进度 < 5% && 已迭代 ≥ 5 次 | 转移到终止状态（带警告） | 已改进至最优但未达目标，人工评估后可接受 |
+| **PLATEAUED** | 平均改进度 < 1% && 已迭代 ≥ 7 次 | 转移到终止状态或等待人工介入 | 改进停滞，可能需要调整策略 |
+| **FAILURE** | 失败率 > 70% && 连续 2 次迭代无改进 | 转移到终止状态 | 持续失败，当前策略无效 |
+| **TIMEOUT** | 迭代次数 > max_iterations | 转移到终止状态 | 达到最大迭代限制 |
+
+#### 3.4.4 示例计算
+
+**示例 1：成功收敛场景**
+
+| 迭代 | 总用例 | 通过用例 | 通过率 | 改进度 | 备注 |
+|-----|--------|---------|--------|--------|------|
+| 1 | 100 | 60 | 60% | - | 基准 |
+| 2 | 100 | 75 | 75% | +15% | 显著改进 |
+| 3 | 100 | 85 | 85% | +10% | 持续改进 |
+| 4 | 100 | 92 | 92% | +7% | 接近目标 |
+| 5 | 100 | 95 | 95% | +3% | 接近目标 |
+
+收敛判定（迭代 5）：
+- 通过率 95% 未达目标 100%
+- 平均改进度（最近3次）：(7% + 10% + 3%) / 3 = 6.67% > 5%
+- 判定结果：继续迭代
+
+| 迭代 | 总用例 | 通过用例 | 通过率 | 改进度 | 备注 |
+|-----|--------|---------|--------|--------|------|
+| 6 | 100 | 98 | 98% | +3% | 接近目标 |
+| 7 | 100 | 100 | 100% | +2% | 达到目标 |
+
+收敛判定（迭代 7）：
+- 通过率 100% ≥ 目标 100% ✓
+- 连续 2 次迭代稳定（迭代 6: 98%, 迭代 7: 100%, 方差 ≈ 0.0002 < 2%） ✓
+- 判定结果：**SUCCESS**
+
+**示例 2：平台期场景**
+
+| 迭代 | 总用例 | 通过用例 | 通过率 | 改进度 | 备注 |
+|-----|--------|---------|--------|--------|------|
+| 1 | 100 | 50 | 50% | - | 基准 |
+| 2 | 100 | 60 | 60% | +10% | 改进 |
+| 3 | 100 | 65 | 65% | +5% | 改进 |
+| 4 | 100 | 68 | 68% | +3% | 改进 |
+| 5 | 100 | 70 | 70% | +2% | 改进 |
+| 6 | 100 | 71 | 71% | +1% | 改进缓慢 |
+| 7 | 100 | 71 | 71% | +0% | 无改进 |
+
+收敛判定（迭代 7）：
+- 通过率 71% 未达目标 100%
+- 平均改进度（最近3次）：(2% + 1% + 0%) / 3 = 1% < 1%
+- 已迭代 7 次 ≥ 7 次 ✓
+- 判定结果：**PLATEAUED**（建议人工介入）
+
+**示例 3：失败场景**
+
+| 迭代 | 总用例 | 通过用例 | 通过率 | 改进度 | 备注 |
+|-----|--------|---------|--------|--------|------|
+| 1 | 100 | 20 | 20% | - | 基准 |
+| 2 | 100 | 25 | 25% | +5% | 改进 |
+| 3 | 100 | 22 | 22% | -3% | 回退 |
+| 4 | 100 | 23 | 23% | +1% | 改进微小 |
+
+收敛判定（迭代 4）：
+- 失败率 77% > 70% ✓
+- 连续 2 次迭代无改进（迭代 3: -3%, 迭代 4: +1%，均 < 5%） ✓
+- 判定结果：**FAILURE**
+
+### 3.5 LangGraph实现示例
+
+```python
+from langgraph.graph import StateGraph, END
+
+# 创建状态图
+graph = StateGraph(State)
+
+# 添加节点
+graph.add_node("code_analysis", code_analysis_node)
+graph.add_node("patch_generation", patch_generation_node)
+graph.add_node("patch_apply", patch_apply_node)
+graph.add_node("build_run", build_run_node)
+graph.add_node("test_run", test_run_node)
+graph.add_node("result_collection", result_collection_node)
+graph.add_node("result_analysis", result_analysis_node)
+graph.add_node("convergence_check", convergence_check_node)
+
+# 设置入口
+graph.set_entry_point("code_analysis")
+
+# 添加边（状态转换）
+graph.add_edge("code_analysis", "patch_generation")
+graph.add_edge("patch_generation", "patch_apply")
+graph.add_edge("patch_apply", "build_run")
+graph.add_edge("build_run", "test_run")
+graph.add_edge("test_run", "result_collection")
+graph.add_edge("result_collection", "result_analysis")
+graph.add_edge("result_analysis", "convergence_check")
+
+# 条件边：收敛检查节点
+def should_continue_convergence(state: State) -> str:
+    """决定是否继续迭代"""
+    if state["convergence_type"] == ConvergenceType.SUCCESS:
+        return "success"
+    elif state["convergence_type"] == ConvergenceType.CONVERGED_WITH_IMPROVEMENT:
+        return "success"
+    elif state["convergence_type"] == ConvergenceType.PLATEAUED:
+        return "aborted"
+    elif state["convergence_type"] == ConvergenceType.FAILURE:
+        return "failure"
+    elif state["convergence_type"] == ConvergenceType.TIMEOUT:
+        return "failure"
+    else:
+        return "continue"
+
+graph.add_conditional_edges(
+    "convergence_check",
+    should_continue_convergence,
+    {
+        "continue": "code_analysis",
+        "success": END,
+        "failure": END,
+        "aborted": END
+    }
+)
+
+# 编译图
+app = graph.compile()
+```
+
+**收敛检查节点实现：**
+
+```python
+def convergence_check_node(state: State) -> State:
+    """收敛检查节点"""
+    # 添加当前迭代结果
+    pass_count = state["test_result"]["passed_tests"]
+    total_count = state["test_result"]["total_tests"]
+    state["pass_counts"].append(pass_count)
+    state["total_counts"].append(total_count)
+
+    # 执行收敛判定
+    convergence_type, reason = determine_convergence(
+        state["pass_counts"],
+        state["total_counts"],
+        state["convergence_criteria"],
+        state["iteration_index"],
+        state["max_iterations"]
+    )
+
+    # 更新状态
+    state["convergence_type"] = convergence_type
+    state["convergence_reason"] = reason
+
+    # 记录决策追踪
+    state["decision_trace"].append({
+        "iteration": state["iteration_index"],
+        "convergence_type": convergence_type.value if convergence_type else None,
+        "reason": reason,
+        "pass_count": pass_count,
+        "total_count": total_count,
+        "pass_rate": pass_count / max(total_count, 1)
+    })
+
+    # 如果继续迭代，增加迭代计数
+    if convergence_type is None:
+        state["iteration_index"] += 1
+
+    return state
+```
+
+### 3.6 收敛判定的关键设计原则
+
+1. **防止无限循环**：通过 max_iterations 参数强制终止
+2. **避免过早终止**：通过 min_iterations_for_slow_improvement 确保给予足够的改进机会
+3. **识别平台期**：通过 plateau_improvement_threshold 识别改进停滞
+4. **保证稳定性**：通过 stability_variance_threshold 确保收敛结果的稳定性
+5. **可配置性**：所有阈值参数均可根据实际场景调整
+6. **可追溯性**：decision_trace 记录每次判定决策的完整信息
+
+---
+
 ## 9. 运行约束与治理（并发、权限、限流、记忆、日志）
 
 ### 9.1 并发与异步策略
