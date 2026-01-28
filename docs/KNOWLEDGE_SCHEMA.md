@@ -1040,6 +1040,1464 @@ async def example_usage():
     print(f"  吞吐量: {metrics.throughput:.2f} 结果/秒")
 ```
 
+### 3.4.6 向量检索与产品线权重融合公式
+
+在实际检索过程中，需要将向量相似度与产品线匹配度进行融合，以获得最终的综合相关性评分。
+
+#### 3.4.6.1 融合公式定义
+
+```python
+import numpy as np
+from typing import Dict, List, Tuple
+
+class ScoreFusionEngine:
+    """分数融合引擎"""
+    
+    # 融合权重配置
+    VECTOR_WEIGHT = 0.6       # 向量相似度权重
+    PRODUCT_LINE_WEIGHT = 0.4  # 产品线匹配度权重
+    
+    @classmethod
+    def fuse_scores(
+        cls,
+        vector_similarity: float,
+        product_line_score: float,
+        compatibility_level: str = "exact",
+        priority_boost: float = 1.0
+    ) -> float:
+        """
+        融合向量相似度与产品线匹配度
+        
+        公式: FusedScore = α × VS × PB + β × PLS × PB
+        
+        其中:
+        - VS (Vector Similarity): 向量相似度 [0, 1]
+        - PLS (Product Line Score): 产品线匹配度 [0, 1]
+        - α = 0.6: 向量权重
+        - β = 0.4: 产品线权重
+        - PB (Priority Boost): 优先级提升系数
+        
+        兼容性级别调整系数:
+        - EXACT: 1.0 (无调整)
+        - FAMILY: 0.9
+        - ARCH: 0.8
+        - GENERIC: 0.6
+        """
+        # 兼容性级别调整
+        compatibility_factor = {
+            "exact": 1.0,
+            "family": 0.9,
+            "architecture": 0.8,
+            "generic": 0.6
+        }.get(compatibility_level, 0.5)
+        
+        # 计算融合分数
+        fused_score = (
+            cls.VECTOR_WEIGHT * vector_similarity +
+            cls.PRODUCT_LINE_WEIGHT * product_line_score
+        ) * compatibility_factor * priority_boost
+        
+        # 归一化到 [0, 1]
+        return min(1.0, max(0.0, fused_score))
+    
+    @classmethod
+    def calculate_final_ranking(
+        cls,
+        candidates: List[Dict],
+        vector_weight: float = None,
+        product_line_weight: float = None
+    ) -> List[Dict]:
+        """
+        计算最终排名
+        
+        对于每个候选结果:
+        1. 获取向量相似度 VS
+        2. 获取产品线匹配度 PLS
+        3. 获取兼容性级别 CL
+        4. 获取优先级提升 PB
+        5. 计算融合分数 FS
+        6. 按 FS 降序排序
+        """
+        vector_w = vector_weight if vector_weight is not None else cls.VECTOR_WEIGHT
+        product_w = product_line_weight if product_line_weight is not None else cls.PRODUCT_LINE_WEIGHT
+        
+        for candidate in candidates:
+            metadata = candidate.get("metadata", {})
+            
+            # 提取各维度分数
+            vector_sim = metadata.get("vector_similarity", 0.5)
+            product_line_score = metadata.get("similarity_score", 0.5)
+            compatibility = metadata.get("compatibility_level", "generic")
+            priority = metadata.get("priority", "medium")
+            
+            # 优先级提升
+            priority_boost = {
+                "critical": 1.3,
+                "high": 1.15,
+                "medium": 1.0,
+                "low": 0.85
+            }.get(priority, 1.0)
+            
+            # 计算融合分数
+            fused_score = cls.fuse_scores(
+                vector_similarity=vector_sim,
+                product_line_score=product_line_score,
+                compatibility_level=compatibility,
+                priority_boost=priority_boost
+            )
+            
+            candidate["metadata"]["fused_score"] = fused_score
+            candidate["metadata"]["ranking_factors"] = {
+                "vector_similarity": vector_sim,
+                "product_line_score": product_line_score,
+                "compatibility_level": compatibility,
+                "priority_boost": priority_boost,
+                "weights": {
+                    "vector": vector_w,
+                    "product_line": product_w
+                }
+            }
+        
+        # 按融合分数排序
+        candidates.sort(
+            key=lambda x: x["metadata"].get("fused_score", 0),
+            reverse=True
+        )
+        
+        return candidates
+```
+
+#### 3.4.6.2 权重配置示例
+
+```python
+# 场景1: 高精度需求 - 更依赖向量检索
+HIGH_PRECISION_WEIGHTS = {
+    "vector_weight": 0.8,
+    "product_line_weight": 0.2
+}
+
+# 场景2: 平衡模式 - 向量与产品线同等重要
+BALANCED_WEIGHTS = {
+    "vector_weight": 0.6,
+    "product_line_weight": 0.4
+}
+
+# 场景3: 高可信度产品线优先 - 更依赖产品线匹配
+HIGH_CONFIDENCE_WEIGHTS = {
+    "vector_weight": 0.4,
+    "product_line_weight": 0.6
+}
+
+# 场景4: 跨产品线探索 - 降低产品线权重
+EXPLORATION_WEIGHTS = {
+    "vector_weight": 0.7,
+    "product_line_weight": 0.3
+}
+
+def get_weights_for_scenario(scenario: str) -> Dict[str, float]:
+    """根据场景获取权重配置"""
+    scenarios = {
+        "high_precision": HIGH_PRECISION_WEIGHTS,
+        "balanced": BALANCED_WEIGHTS,
+        "high_confidence": HIGH_CONFIDENCE_WEIGHTS,
+        "exploration": EXPLORATION_WEIGHTS
+    }
+    return scenarios.get(scenario, BALANCED_WEIGHTS)
+```
+
+### 3.4.7 多级回退策略详解
+
+当特定产品线没有检索结果时，系统采用多级回退策略逐步扩大检索范围。
+
+#### 3.4.7.1 回退策略流程
+
+```python
+from enum import Enum
+from typing import List, Optional, Callable
+
+class FallbackLevel(Enum):
+    """回退级别"""
+    LEVEL_0_EXACT = 0  # 精确匹配
+    LEVEL_1_SOC_FAMILY = 1  # 同系列SoC
+    LEVEL_2_CHIPSET = 2  # 相同Chipset
+    LEVEL_3_FIRMWARE = 3  # 相同固件栈
+    LEVEL_4_ARCH = 4  # 同架构
+    LEVEL_5_GENERIC = 5  # 通用解决方案
+
+class MultiLevelFallbackStrategy:
+    """多级回退策略"""
+    
+    # 回退超时配置（秒）
+    TIMEOUTS = {
+        FallbackLevel.LEVEL_0_EXACT: 5,
+        FallbackLevel.LEVEL_1_SOC_FAMILY: 3,
+        FallbackLevel.LEVEL_2_CHIPSET: 2,
+        FallbackLevel.LEVEL_3_FIRMWARE: 2,
+        FallbackLevel.LEVEL_4_ARCH: 1,
+        FallbackLevel.LEVEL_5_GENERIC: 1
+    }
+    
+    # 回退间隔（秒）
+    INTERVALS = {
+        FallbackLevel.LEVEL_0_EXACT: 0,
+        FallbackLevel.LEVEL_1_SOC_FAMILY: 0.5,
+        FallbackLevel.LEVEL_2_CHIPSET: 0.3,
+        FallbackLevel.LEVEL_3_FIRMWARE: 0.3,
+        FallbackLevel.LEVEL_4_ARCH: 0.2,
+        FallbackLevel.LEVEL_5_GENERIC: 0.2
+    }
+    
+    def __init__(self, max_total_time: float = 15.0):
+        self.max_total_time = max_total_time
+        self.fallback_chain: List[FallbackLevel] = [
+            FallbackLevel.LEVEL_0_EXACT,
+            FallbackLevel.LEVEL_1_SOC_FAMILY,
+            FallbackLevel.LEVEL_2_CHIPSET,
+            FallbackLevel.LEVEL_3_FIRMWARE,
+            FallbackLevel.LEVEL_4_ARCH,
+            FallbackLevel.LEVEL_5_GENERIC
+        ]
+    
+    def execute_fallback_search(
+        self,
+        query: str,
+        profile: "ProductLineProfile",
+        initial_search_func: Callable,
+        fallback_search_func: Callable
+    ) -> List[Dict]:
+        """
+        执行回退搜索
+        
+        流程:
+        1. 精确匹配搜索 → 有结果则返回
+        2. Level 1 回退 → 有结果则返回
+        3. Level 2 回退 → 有结果则返回
+        4. ...
+        5. 全部回退仍无结果 → 返回空列表
+        """
+        results = []
+        accumulated_time = 0.0
+        
+        for level in self.fallback_chain:
+            # 检查超时
+            if accumulated_time >= self.max_total_time:
+                print(f"⏰ 回退搜索超时，停留在 Level {level.value}")
+                break
+            
+            level_timeout = self.TIMEOUTS.get(level, 1.0)
+            
+            # 执行该级别的搜索
+            level_results = self._search_at_level(
+                query=query,
+                level=level,
+                profile=profile,
+                search_func=fallback_search_func,
+                timeout=level_timeout
+            )
+            
+            accumulated_time += level_timeout + self.INTERVALS.get(level, 0)
+            
+            if level_results:
+                # 找到结果，添加元数据后返回
+                for result in level_results:
+                    result["metadata"]["fallback_level"] = level.value
+                    result["metadata"]["fallback_reason"] = self._get_fallback_reason(level)
+                
+                # 合并到最终结果（保留不同级别的结果）
+                results.extend(level_results)
+                
+                # 如果是精确匹配级别，直接返回
+                if level == FallbackLevel.LEVEL_0_EXACT:
+                    return results
+        
+        # 按融合分数重新排序
+        if results:
+            fusion_engine = ScoreFusionEngine()
+            results = fusion_engine.calculate_final_ranking(results)
+        
+        return results
+    
+    def _search_at_level(
+        self,
+        query: str,
+        level: FallbackLevel,
+        profile: "ProductLineProfile",
+        search_func: Callable,
+        timeout: float
+    ) -> List[Dict]:
+        """在指定级别执行搜索"""
+        print(f"🔍 执行 Level {level.value} ({level.name}) 搜索...")
+        
+        # 构建该级别的过滤条件
+        filters = self._build_level_filters(level, profile)
+        
+        # 执行搜索（模拟超时控制）
+        try:
+            results = search_func(query, filters, timeout=timeout)
+            print(f"   → Level {level.value} 返回 {len(results)} 个结果")
+            return results
+        except Exception as e:
+            print(f"   → Level {level.value} 搜索失败: {e}")
+            return []
+    
+    def _build_level_filters(
+        self,
+        level: FallbackLevel,
+        profile: "ProductLineProfile"
+    ) -> Dict:
+        """构建各级别的过滤条件"""
+        filters = {}
+        
+        if level == FallbackLevel.LEVEL_0_EXACT:
+            # 精确匹配
+            filters = {
+                "soc_type": profile.product_line_tags.get("soc_type"),
+                "firmware_stack": profile.product_line_tags.get("firmware_stack"),
+                "chipset": profile.product_line_tags.get("chipset") if isinstance(
+                    profile.product_line_tags.get("chipset"), str
+                ) else None,
+                "platform": profile.product_line_tags.get("platform")
+            }
+        
+        elif level == FallbackLevel.LEVEL_1_SOC_FAMILY:
+            # 同系列SoC（移除chipset限制）
+            filters = {
+                "soc_type": profile.product_line_tags.get("soc_type"),
+                "firmware_stack": profile.product_line_tags.get("firmware_stack"),
+                "platform": profile.product_line_tags.get("platform")
+            }
+        
+        elif level == FallbackLevel.LEVEL_2_CHIPSET:
+            # 相同Chipset（放宽firmware_stack）
+            filters = {
+                "soc_type": profile.product_line_tags.get("soc_type"),
+                "firmware_stack": None,  # 不限制
+                "chipset_family": self._get_chipset_family(
+                    profile.product_line_tags.get("chipset")
+                )
+            }
+        
+        elif level == FallbackLevel.LEVEL_3_FIRMWARE:
+            # 相同固件栈（放宽SoC）
+            filters = {
+                "firmware_stack": profile.product_line_tags.get("firmware_stack"),
+                "platform": profile.product_line_tags.get("platform")
+            }
+        
+        elif level == FallbackLevel.LEVEL_4_ARCH:
+            # 同架构
+            soc_type = profile.product_line_tags.get("soc_type")
+            arch = self._infer_architecture(soc_type)
+            filters = {
+                "architecture": arch,
+                "platform": profile.product_line_tags.get("platform")
+            }
+        
+        elif level == FallbackLevel.LEVEL_5_GENERIC:
+            # 通用解决方案（仅保留基础过滤）
+            filters = {
+                "priority": ["high", "medium"],
+                "min_confidence": 0.7
+            }
+        
+        return {k: v for k, v in filters.items() if v is not None}
+    
+    def _get_chipset_family(self, chipset: str) -> str:
+        """获取Chipset家族系列"""
+        if not chipset:
+            return None
+        
+        # 简化的chipset家族映射
+        if chipset.startswith("HM"):
+            return "HM_series"
+        elif chipset.startswith("WM"):
+            return "WM_series"
+        elif chipset.startswith("TR"):
+            return "TR_series"
+        elif chipset.startswith("X"):
+            return "X_series"
+        else:
+            return "other"
+    
+    def _infer_architecture(self, soc_type: str) -> str:
+        """推断架构"""
+        if not soc_type:
+            return "x86_64"
+        
+        if soc_type.startswith("Tiger") or soc_type.startswith("Alder") or \
+           soc_type.startswith("Raptor") or soc_type.startswith("Meteor") or \
+           soc_type.startswith("Arrow") or soc_type.startswith("Ice") or \
+           soc_type.startswith("Coffee") or soc_type.startswith("Kaby") or \
+           soc_type.startswith("Broadwell") or soc_type.startswith("Haswell"):
+            return "x86_64"
+        elif soc_type.startswith("EPYC") or soc_type.startswith("Ryzen"):
+            return "x86_64"
+        elif soc_type.startswith("Cortex") or soc_type.startswith("Neoverse"):
+            return "AArch64"
+        elif soc_type.startswith("Snapdragon"):
+            return "AArch64"
+        else:
+            return "x86_64"
+    
+    def _get_fallback_reason(self, level: FallbackLevel) -> str:
+        """获取回退原因描述"""
+        reasons = {
+            FallbackLevel.LEVEL_0_EXACT: "精确匹配",
+            FallbackLevel.LEVEL_1_SOC_FAMILY: "同系列SoC回退",
+            FallbackLevel.LEVEL_2_CHIPSET: "相同Chipset回退",
+            FallbackLevel.LEVEL_3_FIRMWARE: "相同固件栈回退",
+            FallbackLevel.LEVEL_4_ARCH: "同架构回退",
+            FallbackLevel.LEVEL_5_GENERIC: "通用解决方案回退"
+        }
+        return reasons.get(level, "未知回退")
+```
+
+#### 3.4.7.2 回退策略配置
+
+```python
+# 回退策略配置类
+@dataclass
+class FallbackConfig:
+    """回退策略配置"""
+    enable_multi_level_fallback: bool = True
+    max_fallback_levels: int = 6
+    max_total_time_seconds: float = 15.0
+    
+    # 各级别是否启用
+    enable_exact_match: bool = True
+    enable_soc_family: bool = True
+    enable_chipset: bool = True
+    enable_firmware: bool = True
+    enable_arch: bool = True
+    enable_generic: bool = True
+    
+    # 结果合并策略
+    merge_results_from_all_levels: bool = True  # True: 合并所有级别结果, False: 只返回最高级别的结果
+    
+    # 分数调整
+    apply_level_penalty: bool = True
+    level_penalty_factor: float = 0.1  # 每降一级扣减的分数
+    
+    def get_active_fallback_levels(self) -> List[FallbackLevel]:
+        """获取启用的回退级别"""
+        levels = []
+        if self.enable_exact_match:
+            levels.append(FallbackLevel.LEVEL_0_EXACT)
+        if self.enable_soc_family:
+            levels.append(FallbackLevel.LEVEL_1_SOC_FAMILY)
+        if self.enable_chipset:
+            levels.append(FallbackLevel.LEVEL_2_CHIPSET)
+        if self.enable_firmware:
+            levels.append(FallbackLevel.LEVEL_3_FIRMWARE)
+        if self.enable_arch:
+            levels.append(FallbackLevel.LEVEL_4_ARCH)
+        if self.enable_generic:
+            levels.append(FallbackLevel.LEVEL_5_GENERIC)
+        return levels[:self.max_fallback_levels]
+
+# 预定义回退策略配置
+AGGRESSIVE_FALLBACK = FallbackConfig(
+    enable_multi_level_fallback=True,
+    max_fallback_levels=6,
+    max_total_time_seconds=20.0,
+    merge_results_from_all_levels=True,
+    apply_level_penalty=True,
+    level_penalty_factor=0.15
+)
+
+BALANCED_FALLBACK = FallbackConfig(
+    enable_multi_level_fallback=True,
+    max_fallback_levels=4,
+    max_total_time_seconds=10.0,
+    merge_results_from_all_levels=False,
+    apply_level_penalty=True,
+    level_penalty_factor=0.1
+)
+
+CONSERVATIVE_FALLBACK = FallbackConfig(
+    enable_multi_level_fallback=True,
+    max_fallback_levels=2,
+    max_total_time_seconds=5.0,
+    merge_results_from_all_levels=False,
+    apply_level_penalty=False
+)
+```
+
+### 3.4.8 示例场景
+
+#### 3.4.8.1 场景一：Tiger Lake + UEFI 检索流程
+
+```python
+"""
+场景描述:
+- 当前任务: 排查 Tiger Lake 平台 UEFI 固件下的 PCIe 初始化问题
+- 产品线信息:
+  - soc_type: Tiger_Lake
+  - firmware_stack: UEFI_2.8
+  - chipset: HM570
+  - platform: Server
+- 查询文本: "PCIe device enumeration timing"
+"""
+
+# 步骤1: 构建产品线档案
+tiger_lake_uefi_profile = ProductLineProfile(
+    profile_id="tiger_lake_uefi_server",
+    product_line_tags={
+        "soc_type": "Tiger_Lake",
+        "firmware_stack": "UEFI_2.8",
+        "chipset": ["HM570", "WM590"],
+        "platform": "Server"
+    },
+    retrieval_priority=9,
+    weight_multipliers={
+        "soc_type": 1.0,      # 最高权重
+        "firmware_stack": 0.95,
+        "chipset": 0.85,
+        "platform": 0.7
+    },
+    compatibility_matrix={
+        "Tiger_Lake": CompatibilityLevel.EXACT,
+        "Alder_Lake": CompatibilityLevel.FAMILY,
+        "Generic_x86_64": CompatibilityLevel.ARCH,
+        "UEFI_2.8": CompatibilityLevel.EXACT,
+        "UEFI_2.9": CompatibilityLevel.FAMILY,
+        "EDK2": CompatibilityLevel.ARCH
+    }
+)
+
+# 步骤2: 配置检索策略
+strategy = RetrievalStrategy(
+    strategy_id="tiger_lake_pcie_search",
+    mode=RetrievalMode.BALANCED,
+    cache_strategy=CacheStrategy.HYBRID,
+    max_results=30,
+    confidence_threshold=0.75,
+    similarity_threshold=0.65,
+    min_success_rate=0.8
+)
+
+# 步骤3: 配置回退策略
+fallback_config = BALANCED_FALLBACK
+
+# 步骤4: 执行检索（模拟）
+async def simulate_tiger_lake_retrieval():
+    """模拟 Tiger Lake 检索流程"""
+    
+    query = "PCIe device enumeration timing"
+    
+    # 假设检索结果
+    mock_results = [
+        {
+            "id": "ku_20241227_001",
+            "content": {
+                "title": "PCIe初始化时序优化",
+                "summary": "针对Intel Tiger Lake平台，PCIe设备在冷启动后未能正确枚举的解决方案"
+            },
+            "metadata": {
+                "product_line": {
+                    "soc_type": "Tiger_Lake",
+                    "firmware_stack": "UEFI_2.8",
+                    "chipset": "HM570",
+                    "platform": "Server"
+                },
+                "confidence_score": 0.92,
+                "priority": "high"
+            }
+        },
+        {
+            "id": "ku_20241226_015",
+            "content": {
+                "title": "UEFI环境下PCIe枚举超时处理",
+                "summary": "在UEFI 2.8固件下处理PCIe设备枚举超时的技术方案"
+            },
+            "metadata": {
+                "product_line": {
+                    "soc_type": "Tiger_Lake",
+                    "firmware_stack": "UEFI_2.8",
+                    "chipset": "WM590",
+                    "platform": "Server"
+                },
+                "confidence_score": 0.88,
+                "priority": "medium"
+            }
+        },
+        {
+            "id": "ku_20241225_032",
+            "content": {
+                "title": "Alder Lake平台PCIe时序调整",
+                "summary": "Alder Lake平台的PCIe初始化时序调整建议"
+            },
+            "metadata": {
+                "product_line": {
+                    "soc_type": "Alder_Lake",
+                    "firmware_stack": "UEFI_2.8",
+                    "chipset": "Z590",
+                    "platform": "Desktop"
+                },
+                "confidence_score": 0.85,
+                "priority": "medium"
+            }
+        },
+        {
+            "id": "ku_20241224_008",
+            "content": {
+                "title": "x86_64平台通用PCIe初始化代码",
+                "summary": "适用于x86_64架构平台的通用PCIe初始化解决方案"
+            },
+            "metadata": {
+                "product_line": {
+                    "soc_type": "Generic_x86_64",
+                    "firmware_stack": "Generic",
+                    "chipset": "Generic",
+                    "platform": "Generic"
+                },
+                "confidence_score": 0.72,
+                "priority": "low"
+            }
+        }
+    ]
+    
+    # 假设的向量相似度
+    vector_similarities = [0.88, 0.82, 0.75, 0.65]
+    
+    # 计算产品线匹配度
+    matcher = ProductLineMatcher(tiger_lake_uefi_profile)
+    fusion_engine = ScoreFusionEngine()
+    
+    print("=" * 60)
+    print("Tiger Lake + UEFI 检索流程示例")
+    print("=" * 60)
+    print(f"\n查询: {query}")
+    print(f"产品线配置:")
+    print(f"  - SoC: Tiger_Lake")
+    print(f"  - Firmware: UEFI_2.8")
+    print(f"  - Chipset: HM570/WM590")
+    print(f"  - Platform: Server")
+    print()
+    
+    # 逐个处理结果
+    for i, (result, vec_sim) in enumerate(zip(mock_results, vector_similarities)):
+        metadata = result["metadata"]
+        product_line = metadata.get("product_line", {})
+        
+        # 产品线匹配
+        match_result = matcher.match_knowledge_unit(result)
+        
+        # 模拟向量相似度
+        metadata["vector_similarity"] = vec_sim
+        metadata["similarity_score"] = match_result.similarity_score
+        metadata["compatibility_level"] = match_result.compatibility_level.value
+        metadata["matched_tags"] = match_result.matched_tags
+        
+        # 计算融合分数
+        fused_score = fusion_engine.fuse_scores(
+            vector_similarity=vec_sim,
+            product_line_score=match_result.similarity_score,
+            compatibility_level=match_result.compatibility_level.value,
+            priority_boost=1.0
+        )
+        
+        metadata["fused_score"] = fused_score
+        
+        print(f"结果 {i+1}: {result['content']['title']}")
+        print(f"  - 产品线: {product_line}")
+        print(f"  - 向量相似度: {vec_sim:.3f}")
+        print(f"  - 产品线匹配度: {match_result.similarity_score:.3f}")
+        print(f"  - 兼容性级别: {match_result.compatibility_level.value}")
+        print(f"  - 匹配标签: {match_result.matched_tags}")
+        print(f"  - 融合分数: {fused_score:.3f}")
+        print()
+    
+    # 最终排序
+    ranked_results = fusion_engine.calculate_final_ranking(mock_results)
+    
+    print("=" * 60)
+    print("最终排名结果:")
+    print("=" * 60)
+    for i, result in enumerate(ranked_results):
+        print(f"{i+1}. [{result['metadata'].get('fused_score', 0):.3f}] "
+              f"{result['content']['title']}")
+    
+    return ranked_results
+
+# 执行示例
+# await simulate_tiger_lake_retrieval()
+
+"""
+预期输出:
+============================================================
+Tiger Lake + UEFI 检索流程示例
+============================================================
+
+查询: PCIe device enumeration timing
+产品线配置:
+  - SoC: Tiger_Lake
+  - Firmware: UEFI_2.8
+  - Chipset: HM570/WM590
+  - Platform: Server
+
+结果 1: PCIe初始化时序优化
+  - 产品线: {'soc_type': 'Tiger_Lake', 'firmware_stack': 'UEFI_2.8', 'chipset': 'HM570', 'platform': 'Server'}
+  - 向量相似度: 0.880
+  - 产品线匹配度: 1.000
+  - 兼容性级别: exact
+  - 匹配标签: {'soc_type': 'Tiger_Lake', 'firmware_stack': 'UEFI_2.8', 'chipset': 'HM570'}
+  - 融合分数: 0.928
+
+结果 2: UEFI环境下PCIe枚举超时处理
+  - 产品线: {'soc_type': 'Tiger_Lake', 'firmware_stack': 'UEFI_2.8', 'chipset': 'WM590', 'platform': 'Server'}
+  - 向量相似度: 0.820
+  - 产品线匹配度: 0.967
+  - 兼容性级别: exact
+  - 匹配标签: {'soc_type': 'Tiger_Lake', 'firmware_stack': 'UEFI_2.8', 'chipset': 'WM590'}
+  - 融合分数: 0.875
+
+结果 3: Alder Lake平台PCIe时序调整
+  - 产品线: {'soc_type': 'Alder_Lake', 'firmware_stack': 'UEFI_2.8', 'chipset': 'Z590', 'platform': 'Desktop'}
+  - 向量相似度: 0.750
+  - 产品线匹配度: 0.850
+  - 兼容性级别: family
+  匹配标签: {'soc_type': 'Alder_Lake', 'firmware_stack': 'UEFI_2.8'}
+  - 融合分数: 0.734
+
+结果 4: x86_64平台通用PCIe初始化代码
+  - 产品线: {'soc_type': 'Generic_x86_64', 'firmware_stack': 'Generic', 'chipset': 'Generic', 'platform': 'Generic'}
+  - 向量相似度: 0.650
+  - 产品线匹配度: 0.500
+  - 兼容性级别: generic
+  - 匹配标签: {}
+  - 融合分数: 0.414
+
+============================================================
+最终排名结果:
+============================================================
+1. [0.928] PCIe初始化时序优化
+2. [0.875] UEFI环境下PCIe枚举超时处理
+3. [0.734] Alder Lake平台PCIe时序调整
+4. [0.414] x86_64平台通用PCIe初始化代码
+"""
+```
+
+#### 3.4.8.2 场景二：跨产品线检索
+
+```python
+"""
+场景描述:
+- 当前任务: 排查 Intel x86_64 架构平台的 USB 控制器问题，但不确定具体的 SoC 型号
+- 产品线信息:
+  - soc_type: Generic_x86_64 (已知架构，但不确定具体型号)
+  - firmware_stack: UEFI (已知固件类型)
+- 查询文本: "USB controller initialization timeout"
+"""
+
+async def cross_product_line_retrieval_example():
+    """跨产品线检索示例"""
+    
+    # 场景配置
+    query = "USB controller initialization timeout"
+    current_product_line = {
+        "soc_type": "Generic_x86_64",
+        "firmware_stack": "UEFI",
+        "platform": "Server"
+    }
+    
+    # 知识库中的知识单元（不同产品线）
+    knowledge_units = [
+        # Tiger Lake 平台
+        {
+            "id": "ku_001",
+            "content": {"title": "Tiger Lake USB控制器初始化优化"},
+            "metadata": {
+                "product_line": {
+                    "soc_type": "Tiger_Lake",
+                    "firmware_stack": "UEFI_2.8"
+                },
+                "confidence_score": 0.95
+            }
+        },
+        # Alder Lake 平台
+        {
+            "id": "ku_002",
+            "content": {"title": "Alder Lake USB 3.0 端口配置"},
+            "metadata": {
+                "product_line": {
+                    "soc_type": "Alder_Lake",
+                    "firmware_stack": "UEFI_2.9"
+                },
+                "confidence_score": 0.90
+            }
+        },
+        # EPYC (AMD) 平台
+        {
+            "id": "ku_003",
+            "content": {"title": "EPYC平台USB控制器驱动适配"},
+            "metadata": {
+                "product_line": {
+                    "soc_type": "EPYC_Milan",
+                    "firmware_stack": "UEFI_2.8"
+                },
+                "confidence_score": 0.88
+            }
+        },
+        # 通用 x86_64
+        {
+            "id": "ku_004",
+            "content": {"title": "x86_64通用USB初始化流程"},
+            "metadata": {
+                "product_line": {
+                    "soc_type": "Generic_x86_64",
+                    "firmware_stack": "Generic"
+                },
+                "confidence_score": 0.75
+            }
+        }
+    ]
+    
+    # 向量相似度（模拟）
+    vector_similarities = [0.85, 0.80, 0.78, 0.72]
+    
+    print("=" * 60)
+    print("跨产品线检索示例")
+    print("=" * 60)
+    print(f"\n查询: {query}")
+    print(f"当前产品线: {current_product_line}")
+    print()
+    
+    # 通用 x86_64 档案
+    generic_profile = ProductLineProfile(
+        profile_id="generic_x86_64_uefi",
+        product_line_tags={
+            "soc_type": "Generic_x86_64",
+            "firmware_stack": "UEFI"
+        },
+        retrieval_priority=1,
+        weight_multipliers={
+            "soc_type": 0.6,
+            "firmware_stack": 0.8,
+            "platform": 0.5
+        },
+        compatibility_matrix={
+            "Generic_x86_64": CompatibilityLevel.EXACT,
+            "Tiger_Lake": CompatibilityLevel.ARCH,
+            "Alder_Lake": CompatibilityLevel.ARCH,
+            "EPYC_Milan": CompatibilityLevel.ARCH,
+            "UEFI": CompatibilityLevel.EXACT,
+            "UEFI_2.8": CompatibilityLevel.FAMILY,
+            "UEFI_2.9": CompatibilityLevel.FAMILY
+        }
+    )
+    
+    matcher = ProductLineMatcher(generic_profile)
+    fusion_engine = ScoreFusionEngine()
+    
+    # 处理每个知识单元
+    for ku, vec_sim in zip(knowledge_units, vector_similarities):
+        metadata = ku["metadata"]
+        metadata["vector_similarity"] = vec_sim
+        
+        match_result = matcher.match_knowledge_unit(ku)
+        
+        metadata["similarity_score"] = match_result.similarity_score
+        metadata["compatibility_level"] = match_result.compatibility_level.value
+        metadata["matched_tags"] = match_result.matched_tags
+        
+        fused_score = fusion_engine.fuse_scores(
+            vector_similarity=vec_sim,
+            product_line_score=match_result.similarity_score,
+            compatibility_level=match_result.compatibility_level.value
+        )
+        
+        metadata["fused_score"] = fused_score
+        
+        print(f"知识单元: {ku['content']['title']}")
+        print(f"  - 原始产品线: {ku['metadata']['product_line']}")
+        print(f"  - 向量相似度: {vec_sim:.3f}")
+        print(f"  - 产品线匹配度: {match_result.similarity_score:.3f}")
+        print(f"  - 兼容性级别: {match_result.compatibility_level.value}")
+        print(f"  - 融合分数: {fused_score:.3f}")
+        print()
+    
+    # 排序结果
+    ranked = fusion_engine.calculate_final_ranking(knowledge_units)
+    
+    print("跨产品线检索结果排名:")
+    for i, ku in enumerate(ranked):
+        print(f"  {i+1}. [{ku['metadata']['fused_score']:.3f}] "
+              f"{ku['content']['title']} "
+              f"(原产品线: {ku['metadata']['product_line']['soc_type']})")
+
+# await cross_product_line_retrieval_example()
+
+"""
+预期输出:
+============================================================
+跨产品线检索示例
+============================================================
+
+查询: USB controller initialization timeout
+当前产品线: {'soc_type': 'Generic_x86_64', 'firmware_stack': 'UEFI', 'platform': 'Server'}
+
+知识单元: Tiger Lake USB控制器初始化优化
+  - 原始产品线: {'soc_type': 'Tiger_Lake', 'firmware_stack': 'UEFI_2.8'}
+  - 向量相似度: 0.850
+  - 产品线匹配度: 0.733
+  - 兼容性级别: architecture
+  - 融合分数: 0.720
+
+知识单元: Alder Lake USB 3.0 端口配置
+  - 原始产品线: {'soc_type': 'Alder_Lake', 'firmware_stack': 'UEFI_2.9'}
+  - 向量相似度: 0.800
+  - 产品线匹配度: 0.733
+  - 兼容性级别: architecture
+  - 融合分数: 0.696
+
+知识单元: EPYC平台USB控制器驱动适配
+  - 原始产品线: {'soc_type': 'EPYC_Milan', 'firmware_stack': 'UEFI_2.8'}
+  - 向量相似度: 0.780
+  - 产品线匹配度: 0.700
+  - 兼容性级别: architecture
+  - 融合分数: 0.672
+
+知识单元: x86_64通用USB初始化流程
+  - 原始产品线: {'soc_type': 'Generic_x86_64', 'firmware_stack': 'Generic'}
+  - 向量相似度: 0.720
+  - 产品线匹配度: 0.700
+  - 兼容性级别: exact
+  - 融合分数: 0.616
+
+跨产品线检索结果排名:
+  1. [0.720] Tiger Lake USB控制器初始化优化 (原产品线: Tiger_Lake)
+  2. [0.696] Alder Lake USB 3.0 端口配置 (原产品线: Alder_Lake)
+  3. [0.672] EPYC平台USB控制器驱动适配 (原产品线: EPYC_Milan)
+  4. [0.616] x86_64通用USB初始化流程 (原产品线: Generic_x86_64)
+"""
+```
+
+#### 3.4.8.3 场景三：权重参数实际取值指南
+
+```python
+"""
+权重参数配置指南
+
+以下提供不同场景下的推荐权重配置和参数取值说明。
+"""
+
+# ============================================================
+# 1. 产品线权重配置 (weight_multipliers)
+# ============================================================
+# 
+# 推荐取值范围和说明:
+# - soc_type: 0.9 ~ 1.0 (SoC类型最关键，必须高权重)
+# - firmware_stack: 0.8 ~ 0.95 (固件栈兼容性很重要)
+# - chipset: 0.6 ~ 0.85 (Chipset有一定影响，但不是决定性)
+# - platform: 0.5 ~ 0.7 (平台类型影响相对较小)
+#
+# 示例配置:
+
+WEIGHT_CONFIGS = {
+    # 场景: 严格产品线匹配 (如: 安全关键系统)
+    "strict": {
+        "soc_type": 1.0,
+        "firmware_stack": 1.0,
+        "chipset": 0.9,
+        "platform": 0.8
+    },
+    
+    # 场景: 标准服务器部署 (推荐默认配置)
+    "standard_server": {
+        "soc_type": 1.0,
+        "firmware_stack": 0.95,
+        "chipset": 0.85,
+        "platform": 0.7
+    },
+    
+    # 场景: 桌面/嵌入式系统
+    "desktop_embedded": {
+        "soc_type": 0.95,
+        "firmware_stack": 0.9,
+        "chipset": 0.75,
+        "platform": 0.8
+    },
+    
+    # 场景: 跨平台兼容性优先
+    "cross_platform": {
+        "soc_type": 0.8,
+        "firmware_stack": 0.85,
+        "chipset": 0.6,
+        "platform": 0.9
+    },
+    
+    # 场景: 架构级通用 (最小产品线约束)
+    "architecture_only": {
+        "soc_type": 0.5,
+        "firmware_stack": 0.6,
+        "chipset": 0.3,
+        "platform": 0.4
+    }
+}
+
+# ============================================================
+# 2. 检索权重配置 (向量 vs 产品线)
+# ============================================================
+#
+# 推荐取值范围和说明:
+# - VECTOR_WEIGHT: 0.4 ~ 0.7 (语义相似度)
+# - PRODUCT_LINE_WEIGHT: 0.3 ~ 0.6 (产品线匹配度)
+# - 总和应接近 1.0
+#
+# 示例配置:
+
+RETRIEVAL_WEIGHT_CONFIGS = {
+    # 场景: 语义优先 (向量检索为主)
+    "semantic_first": {
+        "vector_weight": 0.7,
+        "product_line_weight": 0.3
+    },
+    
+    # 场景: 平衡模式 (推荐默认)
+    "balanced": {
+        "vector_weight": 0.6,
+        "product_line_weight": 0.4
+    },
+    
+    # 场景: 产品线优先 (特定平台)
+    "product_line_first": {
+        "vector_weight": 0.4,
+        "product_line_weight": 0.6
+    },
+    
+    # 场景: 探索模式 (扩大检索范围)
+    "exploration": {
+        "vector_weight": 0.65,
+        "product_line_weight": 0.35
+    }
+}
+
+# ============================================================
+# 3. 兼容性级别评分 (Compatibility Scores)
+# ============================================================
+#
+# 定义不同兼容性级别的降权系数:
+
+COMPATIBILITY_SCORES = {
+    # 完全匹配 - 无降权
+    "exact": {
+        "score": 1.0,
+        "description": "所有标签完全匹配",
+        "example": "Tiger_Lake + UEFI_2.8 → Tiger_Lake + UEFI_2.8"
+    },
+    
+    # 同系列 - 轻微降权 (10%)
+    "family": {
+        "score": 0.9,
+        "description": "同系列产品兼容",
+        "example": "Tiger_Lake → Alder_Lake (Intel 12th vs 13th Gen)"
+    },
+    
+    # 同架构 - 中度降权 (20%)
+    "architecture": {
+        "score": 0.8,
+        "description": "同架构但不同厂商",
+        "example": "Tiger_Lake (Intel) → EPYC_Milan (AMD)"
+    },
+    
+    # 通用 - 较大降权 (40%)
+    "generic": {
+        "score": 0.6,
+        "description": "通用解决方案",
+        "example": "Tiger_Lake → Generic_x86_64"
+    }
+}
+
+# ============================================================
+# 4. 回退策略超时配置
+# ============================================================
+#
+# 推荐取值原则:
+# - 精确匹配: 5-10秒 (主要检索路径)
+# - 同系列回退: 3-5秒
+# - Chipset回退: 2-3秒
+# - 固件回退: 2-3秒
+# - 架构回退: 1-2秒
+# - 通用回退: 1-2秒
+#
+# 总超时: 15-25秒
+
+FALLBACK_TIMEOUT_CONFIGS = {
+    # 快速模式 (总超时 10秒)
+    "fast": {
+        "exact": 4,
+        "family": 2,
+        "chipset": 1.5,
+        "firmware": 1.5,
+        "architecture": 1,
+        "generic": 1,
+        "max_total": 10
+    },
+    
+    # 平衡模式 (推荐默认, 总超时 15秒)
+    "balanced": {
+        "exact": 6,
+        "family": 3,
+        "chipset": 2,
+        "firmware": 2,
+        "architecture": 1,
+        "generic": 1,
+        "max_total": 15
+    },
+    
+    # 深度模式 (总超时 25秒)
+    "deep": {
+        "exact": 10,
+        "family": 5,
+        "chipset": 3,
+        "firmware": 3,
+        "architecture": 2,
+        "generic": 2,
+        "max_total": 25
+    }
+}
+
+# ============================================================
+# 5. 阈值配置建议
+# ============================================================
+
+THRESHOLD_CONFIGS = {
+    # 严格场景
+    "strict": {
+        "confidence_threshold": 0.85,
+        "similarity_threshold": 0.75,
+        "min_success_rate": 0.9,
+        "min_vector_similarity": 0.8
+    },
+    
+    # 标准场景 (推荐默认)
+    "standard": {
+        "confidence_threshold": 0.75,
+        "similarity_threshold": 0.65,
+        "min_success_rate": 0.8,
+        "min_vector_similarity": 0.7
+    },
+    
+    # 宽松场景
+    "relaxed": {
+        "confidence_threshold": 0.6,
+        "similarity_threshold": 0.5,
+        "min_success_rate": 0.7,
+        "min_vector_similarity": 0.5
+    },
+    
+    # 探索场景
+    "exploration": {
+        "confidence_threshold": 0.5,
+        "similarity_threshold": 0.4,
+        "min_success_rate": 0.6,
+        "min_vector_similarity": 0.4
+    }
+}
+
+# ============================================================
+# 6. 配置验证函数
+# ============================================================
+
+def validate_weight_config(config: Dict[str, float], 
+                          expected_keys: List[str] = None) -> Tuple[bool, List[str]]:
+    """
+    验证权重配置的有效性
+    
+    返回: (是否有效, 错误列表)
+    """
+    errors = []
+    
+    # 检查必填字段
+    required_keys = expected_keys or ["soc_type", "firmware_stack"]
+    for key in required_keys:
+        if key not in config:
+            errors.append(f"缺少必填字段: {key}")
+    
+    # 检查取值范围
+    for key, value in config.items():
+        if not 0 <= value <= 1:
+            errors.append(f"{key} 取值 {value} 超出 [0, 1] 范围")
+    
+    # 检查总和（如果是检索权重配置）
+    if "vector_weight" in config and "product_line_weight" in config:
+        total = config["vector_weight"] + config["product_line_weight"]
+        if abs(total - 1.0) > 0.01:  # 允许0.01的误差
+            errors.append(f"权重总和 {total} 不等于 1.0")
+    
+    return len(errors) == 0, errors
+
+# 配置验证示例
+# is_valid, errors = validate_weight_config(WEIGHT_CONFIGS["standard_server"])
+# if not is_valid:
+#     print(f"配置无效: {errors}")
+```
+
+### 3.4.9 排序和过滤规则
+
+```python
+from typing import List, Dict, Optional, Callable
+from dataclasses import dataclass, field
+from enum import Enum
+import time
+
+class SortOrder(Enum):
+    """排序顺序"""
+    ASC = "asc"
+    DESC = "desc"
+
+class FilterAction(Enum):
+    """过滤动作"""
+    INCLUDE = "include"
+    EXCLUDE = "exclude"
+
+@dataclass
+class SortRule:
+    """排序规则"""
+    field: str
+    order: SortOrder = SortOrder.DESC
+    weight: float = 1.0
+
+@dataclass
+class FilterRule:
+    """过滤规则"""
+    field: str
+    value: any
+    action: FilterAction = FilterAction.INCLUDE
+    condition: Optional[Callable] = None
+
+@dataclass
+class RankingConfig:
+    """排序和过滤配置"""
+    # 排序规则列表
+    sort_rules: List[SortRule] = field(default_factory=list)
+    
+    # 过滤规则列表
+    filter_rules: List[FilterRule] = field(default_factory=list)
+    
+    # 分数阈值
+    min_fused_score: float = 0.0
+    max_results: int = 100
+    
+    # 去重配置
+    enable_deduplication: bool = True
+    deduplication_field: str = "id"
+    
+    # 分数平滑
+    enable_score_smoothing: bool = False
+    smoothing_factor: float = 0.1
+
+class KnowledgeUnitRanker:
+    """知识单元排序器"""
+    
+    def __init__(self, config: RankingConfig):
+        self.config = config
+    
+    def apply_filters(self, results: List[Dict]) -> List[Dict]:
+        """应用过滤规则"""
+        filtered = results
+        
+        for rule in self.config.filter_rules:
+            filtered = self._apply_single_filter(filtered, rule)
+        
+        # 分数阈值过滤
+        if self.config.min_fused_score > 0:
+            filtered = [
+                r for r in filtered
+                if r.get("metadata", {}).get("fused_score", 0) >= self.config.min_fused_score
+            ]
+        
+        return filtered
+    
+    def _apply_single_filter(self, results: List[Dict], rule: FilterRule) -> List[Dict]:
+        """应用单条过滤规则"""
+        if rule.condition:
+            # 自定义过滤条件
+            if rule.action == FilterAction.INCLUDE:
+                return [r for r in results if rule.condition(r)]
+            else:
+                return [r for r in results if not rule.condition(r)]
+        else:
+            # 字段值匹配
+            def matches(result):
+                value = self._get_nested_value(result, rule.field)
+                if isinstance(rule.value, list):
+                    return value in rule.value
+                return value == rule.value
+            
+            if rule.action == FilterAction.INCLUDE:
+                return [r for r in results if matches(r)]
+            else:
+                return [r for r in results if not matches(r)]
+    
+    def apply_sorting(self, results: List[Dict]) -> List[Dict]:
+        """应用排序规则"""
+        if not self.config.sort_rules:
+            return results
+        
+        def sort_key(item):
+            scores = []
+            for rule in self.config.sort_rules:
+                value = self._get_nested_value(item, f"metadata.{rule.field}", 
+                                               default=0, check_fused=True)
+                if rule.order == SortOrder.DESC:
+                    scores.append(-value * rule.weight)
+                else:
+                    scores.append(value * rule.weight)
+            return tuple(scores)
+        
+        sorted_results = sorted(results, key=sort_key)
+        
+        # 应用分数平滑（如果启用）
+        if self.config.enable_score_smoothing:
+            sorted_results = self._apply_score_smoothing(sorted_results)
+        
+        return sorted_results
+    
+    def _apply_score_smoothing(self, results: List[Dict]) -> List[Dict]:
+        """应用分数平滑，避免分数差距过大"""
+        if not results:
+            return results
+        
+        scores = [r.get("metadata", {}).get("fused_score", 0) for r in results]
+        max_score = max(scores)
+        min_score = min(scores)
+        
+        if max_score == min_score:
+            return results
+        
+        # 使用对数平滑
+        for result in results:
+            original_score = result.get("metadata", {}).get("fused_score", 0)
+            # 归一化到 [0, 1]
+            normalized = (original_score - min_score) / (max_score - min_score)
+            # 对数变换
+            smoothed = 0.1 + 0.9 * (normalized ** 0.5)
+            result["metadata"]["smoothed_score"] = smoothed
+        
+        # 按平滑分数重新排序
+        results.sort(
+            key=lambda x: x["metadata"].get("smoothed_score", 0),
+            reverse=True
+        )
+        
+        return results
+    
+    def apply_deduplication(self, results: List[Dict]) -> List[Dict]:
+        """应用去重"""
+        if not self.config.enable_deduplication:
+            return results
+        
+        seen = set()
+        unique_results = []
+        
+        for result in results:
+            key = self._get_nested_value(result, self.config.deduplication_field)
+            if key and key not in seen:
+                seen.add(key)
+                unique_results.append(result)
+        
+        return unique_results
+    
+    def _get_nested_value(self, obj: Dict, path: str, default=None, check_fused: bool = False) -> any:
+        """获取嵌套字典的值"""
+        # 支持点号分隔的路径
+        keys = path.split(".")
+        
+        # 如果检查 fused_score，先尝试从 metadata 获取
+        if check_fused and len(keys) >= 2 and keys[0] == "metadata" and keys[1] == "fused_score":
+            return obj.get("metadata", {}).get("fused_score", default)
+        
+        current = obj
+        for key in keys:
+            if isinstance(current, dict):
+                current = current.get(key)
+            else:
+                return default
+            if current is None:
+                return default
+        
+        return current
+    
+    def rank(self, results: List[Dict]) -> List[Dict]:
+        """
+        完整的排序流程:
+        1. 应用过滤
+        2. 应用去重
+        3. 应用排序
+        4. 截断结果
+        """
+        # 应用过滤
+        filtered = self.apply_filters(results)
+        
+        # 应用去重
+        deduplicated = self.apply_deduplication(filtered)
+        
+        # 应用排序
+        sorted_results = self.apply_sorting(deduplicated)
+        
+        # 截断结果
+        return sorted_results[:self.config.max_results]
+
+# 预定义排序配置
+RANKING_CONFIGS = {
+    # 默认排序 (融合分数降序)
+    "default": RankingConfig(
+        sort_rules=[
+            SortRule(field="fused_score", order=SortOrder.DESC),
+            SortRule(field="confidence_score", order=SortOrder.DESC)
+        ]
+    ),
+    
+    # 精确度优先 (置信度降序)
+    "confidence_first": RankingConfig(
+        sort_rules=[
+            SortRule(field="confidence_score", order=SortOrder.DESC, weight=1.5),
+            SortRule(field="fused_score", order=SortOrder.DESC)
+        ],
+        filter_rules=[
+            FilterRule(field="execution_result.status", value="success")
+        ]
+    ),
+    
+    # 新鲜度优先 (更新时间降序)
+    "freshness_first": RankingConfig(
+        sort_rules=[
+            SortRule(field="updated_at", order=SortOrder.DESC),
+            SortRule(field="fused_score", order=SortOrder.DESC)
+        ],
+        filter_rules=[
+            FilterRule(field="confidence_score", value=0.7, action=FilterAction.INCLUDE)
+        ]
+    ),
+    
+    # 产品线精确匹配优先
+    "exact_product_line": RankingConfig(
+        sort_rules=[
+            SortRule(field="similarity_score", order=SortOrder.DESC, weight=1.5),
+            SortRule(field="fused_score", order=SortOrder.DESC)
+        ],
+        filter_rules=[
+            FilterRule(field="compatibility_level", value="exact", 
+                      action=FilterAction.INCLUDE)
+        ]
+    ),
+    
+    # 成功率优先
+    "success_rate_first": RankingConfig(
+        sort_rules=[
+            SortRule(field="execution_result.success_rate", order=SortOrder.DESC, weight=2.0),
+            SortRule(field="fused_score", order=SortOrder.DESC)
+        ]
+    )
+}
+
+def get_ranking_config(config_name: str) -> RankingConfig:
+    """获取预定义排序配置"""
+    return RANKING_CONFIGS.get(config_name, RANKING_CONFIGS["default"])
+```
+
 ---
 
 ## 4. Qdrant 向量数据库 Schema
