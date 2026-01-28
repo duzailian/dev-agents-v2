@@ -1342,10 +1342,12 @@ class KBAgent(AgentBase):
 
 ```python
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
 import asyncio
 import uuid
+import time
+from datetime import datetime
 
 class MessageType(Enum):
     """消息类型"""
@@ -1356,12 +1358,23 @@ class MessageType(Enum):
     KNOWLEDGE_QUERY = "knowledge_query"
     KNOWLEDGE_RESPONSE = "knowledge_response"
     HEARTBEAT = "heartbeat"
+    RETRY_REQUEST = "retry_request"
+    CIRCUIT_BREAKER_OPEN = "circuit_breaker_open"
 
 class MessagePriority(Enum):
     """消息优先级"""
     HIGH = 1
     NORMAL = 5
     LOW = 10
+
+class MessageStatus(Enum):
+    """消息状态"""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    RETRYING = "retrying"
+    DEAD_LETTER = "dead_letter"
 
 @dataclass
 class AgentMessage:
@@ -1375,6 +1388,10 @@ class AgentMessage:
     correlation_id: Optional[str] = None
     priority: MessagePriority = MessagePriority.NORMAL
     timeout: int = 30
+    status: MessageStatus = MessageStatus.PENDING
+    retry_count: int = 0
+    max_retries: int = 3
+    created_at: float = field(default_factory=time.time)
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -1387,7 +1404,11 @@ class AgentMessage:
             "timestamp": self.timestamp.isoformat(),
             "correlation_id": self.correlation_id,
             "priority": self.priority.value,
-            "timeout": self.timeout
+            "timeout": self.timeout,
+            "status": self.status.value,
+            "retry_count": self.retry_count,
+            "max_retries": self.max_retries,
+            "created_at": self.created_at
         }
 ```
 
@@ -1483,7 +1504,521 @@ class AgentCommunicationBus:
             await self.unsubscribe(message.sender_id, response_handler)
 ```
 
-### 6.3 通信协议示例
+### 6.3 增强的容错通信总线
+
+```python
+from enum import Enum
+from typing import Dict, List, Set, Optional
+import asyncio
+import json
+import logging
+from collections import defaultdict, deque
+from dataclasses import dataclass
+import time
+
+class CircuitBreakerState(Enum):
+    """熔断器状态"""
+    CLOSED = "closed"    # 正常状态
+    OPEN = "open"       # 熔断状态
+    HALF_OPEN = "half_open"  # 半开状态
+
+@dataclass
+class RetryConfig:
+    """重试配置"""
+    max_attempts: int = 3
+    initial_delay: float = 1.0  # 初始延迟（秒）
+    max_delay: float = 60.0    # 最大延迟（秒）
+    backoff_factor: float = 2.0  # 退避因子
+    jitter: bool = True        # 是否添加随机抖动
+
+@dataclass
+class DeadLetterConfig:
+    """死信队列配置"""
+    enabled: bool = True
+    max_retention_hours: int = 24
+    alerting_threshold: int = 10
+    cleanup_interval: int = 3600  # 清理间隔（秒）
+
+@dataclass
+class CircuitBreakerConfig:
+    """熔断器配置"""
+    failure_threshold: int = 5      # 失败阈值
+    recovery_timeout: int = 60     # 恢复超时（秒）
+    half_open_max_calls: int = 3   # 半开状态下的最大调用数
+
+class FaultTolerantCommunicationBus(AgentCommunicationBus):
+    """容错通信总线"""
+    
+    def __init__(self, 
+                 retry_config: RetryConfig = None,
+                 dead_letter_config: DeadLetterConfig = None,
+                 circuit_breaker_config: CircuitBreakerConfig = None):
+        super().__init__()
+        
+        # 配置
+        self.retry_config = retry_config or RetryConfig()
+        self.dead_letter_config = dead_letter_config or DeadLetterConfig()
+        self.circuit_breaker_config = circuit_breaker_config or CircuitBreakerConfig()
+        
+        # 状态管理
+        self.message_status: Dict[str, MessageStatus] = {}
+        self.dead_letter_queue: List[AgentMessage] = []
+        self.circuit_breakers: Dict[str, CircuitBreakerState] = defaultdict(
+            lambda: CircuitBreakerState.CLOSED
+        )
+        
+        # 统计信息
+        self.metrics = {
+            "total_messages": 0,
+            "successful_messages": 0,
+            "failed_messages": 0,
+            "retried_messages": 0,
+            "dead_letter_messages": 0,
+            "circuit_breaker_trips": 0
+        }
+        
+        # 性能监控
+        self.performance_monitor = PerformanceMonitor()
+        
+        # 告警系统
+        self.alerting_system = AlertingSystem()
+        
+        # 清理任务
+        self._cleanup_task = None
+        
+    async def start(self):
+        """启动容错通信总线"""
+        self.running = True
+        
+        # 启动消息处理器
+        asyncio.create_task(self._fault_tolerant_message_processor())
+        
+        # 启动死信队列处理器
+        if self.dead_letter_config.enabled:
+            self._cleanup_task = asyncio.create_task(self._dead_letter_processor())
+        
+        # 启动性能监控
+        asyncio.create_task(self._performance_monitor_task())
+        
+    async def stop(self):
+        """停止容错通信总线"""
+        self.running = False
+        
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            
+        await self.performance_monitor.close()
+        await self.alerting_system.close()
+    
+    async def _fault_tolerant_message_processor(self):
+        """容错消息处理器"""
+        while self.running:
+            try:
+                priority, message = await asyncio.wait_for(
+                    self.message_queue.get(), timeout=1.0
+                )
+                
+                self.metrics["total_messages"] += 1
+                await self._process_message_with_retry(message)
+                
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                logging.error(f"Message processor error: {str(e)}")
+    
+    async def _process_message_with_retry(self, message: AgentMessage):
+        """带重试的消息处理"""
+        max_attempts = self.retry_config.max_attempts
+        delay = self.retry_config.initial_delay
+        
+        for attempt in range(max_attempts + 1):
+            try:
+                # 检查熔断器状态
+                if not await self._can_send_message(message.receiver_id):
+                    raise CircuitBreakerOpenException(
+                        f"Circuit breaker is open for {message.receiver_id}"
+                    )
+                
+                message.status = MessageStatus.PROCESSING
+                await self._deliver_message(message)
+                
+                message.status = MessageStatus.COMPLETED
+                self.metrics["successful_messages"] += 1
+                
+                # 记录性能指标
+                await self.performance_monitor.record_success(
+                    message.message_id, 
+                    time.time() - message.created_at
+                )
+                
+                return
+                
+            except Exception as e:
+                if attempt == max_attempts:
+                    # 达到最大重试次数，发送到死信队列
+                    await self._send_to_dead_letter_queue(message, str(e))
+                    self.metrics["dead_letter_messages"] += 1
+                    break
+                else:
+                    # 重试
+                    message.retry_count += 1
+                    message.status = MessageStatus.RETRYING
+                    self.metrics["retried_messages"] += 1
+                    
+                    # 计算延迟（带抖动）
+                    retry_delay = self._calculate_retry_delay(attempt, delay)
+                    
+                    logging.warning(
+                        f"Message {message.message_id} failed (attempt {attempt + 1}), "
+                        f"retrying in {retry_delay}s: {str(e)}"
+                    )
+                    
+                    await asyncio.sleep(retry_delay)
+                    delay = min(delay * self.retry_config.backoff_factor, 
+                              self.retry_config.max_delay)
+    
+    async def _deliver_message(self, message: AgentMessage):
+        """投递消息"""
+        if message.receiver_id not in self.subscribers:
+            raise ValueError(f"No subscribers for receiver {message.receiver_id}")
+        
+        # 创建超时任务
+        delivery_tasks = []
+        for callback in self.subscribers[message.receiver_id]:
+            task = asyncio.create_task(
+                asyncio.wait_for(callback(message), timeout=message.timeout)
+            )
+            delivery_tasks.append(task)
+        
+        # 等待所有投递任务完成
+        results = await asyncio.gather(*delivery_tasks, return_exceptions=True)
+        
+        # 检查是否有成功的投递
+        successful = any(not isinstance(result, Exception) for result in results)
+        if not successful:
+            exceptions = [r for r in results if isinstance(r, Exception)]
+            raise Exception(f"All delivery attempts failed: {exceptions}")
+    
+    def _calculate_retry_delay(self, attempt: int, base_delay: float) -> float:
+        """计算重试延迟"""
+        delay = base_delay * (self.retry_config.backoff_factor ** attempt)
+        delay = min(delay, self.retry_config.max_delay)
+        
+        if self.retry_config.jitter:
+            # 添加±25%的随机抖动
+            import random
+            jitter_range = delay * 0.25
+            delay += random.uniform(-jitter_range, jitter_range)
+        
+        return max(0, delay)
+    
+    async def _send_to_dead_letter_queue(self, message: AgentMessage, reason: str):
+        """发送到死信队列"""
+        message.status = MessageStatus.DEAD_LETTER
+        self.dead_letter_queue.append(message)
+        
+        # 记录死信原因
+        logging.error(
+            f"Message {message.message_id} sent to dead letter queue. "
+            f"Reason: {reason}"
+        )
+        
+        # 检查是否需要告警
+        if len(self.dead_letter_queue) >= self.dead_letter_config.alerting_threshold:
+            await self.alerting_system.send_alert(
+                f"Dead letter queue size: {len(self.dead_letter_queue)}"
+            )
+    
+    async def _dead_letter_processor(self):
+        """死信队列处理器"""
+        while self.running:
+            try:
+                await asyncio.sleep(self.dead_letter_config.cleanup_interval)
+                await self._cleanup_dead_letter_queue()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logging.error(f"Dead letter processor error: {str(e)}")
+    
+    async def _cleanup_dead_letter_queue(self):
+        """清理死信队列"""
+        current_time = time.time()
+        retention_threshold = self.dead_letter_config.max_retention_hours * 3600
+        
+        # 保留最近的消息
+        recent_messages = []
+        expired_count = 0
+        
+        for message in self.dead_letter_queue:
+            if current_time - message.created_at < retention_threshold:
+                recent_messages.append(message)
+            else:
+                expired_count += 1
+        
+        self.dead_letter_queue = recent_messages
+        
+        if expired_count > 0:
+            logging.info(f"Cleaned up {expired_count} expired dead letter messages")
+    
+    async def _can_send_message(self, receiver_id: str) -> bool:
+        """检查是否可以发送消息（熔断器逻辑）"""
+        state = self.circuit_breakers[receiver_id]
+        
+        if state == CircuitBreakerState.CLOSED:
+            return True
+        elif state == CircuitBreakerState.OPEN:
+            # 检查是否可以尝试半开状态
+            if hasattr(self, '_circuit_breaker_open_times'):
+                last_open_time = getattr(self, '_circuit_breaker_open_times', {}).get(receiver_id, 0)
+                if time.time() - last_open_time > self.circuit_breaker_config.recovery_timeout:
+                    self.circuit_breakers[receiver_id] = CircuitBreakerState.HALF_OPEN
+                    return True
+            return False
+        else:  # HALF_OPEN
+            # 半开状态下允许少量尝试
+            return True
+    
+    async def _handle_delivery_failure(self, receiver_id: str, error: Exception):
+        """处理投递失败"""
+        # 记录失败
+        if not hasattr(self, '_failure_counts'):
+            self._failure_counts = defaultdict(int)
+        
+        self._failure_counts[receiver_id] += 1
+        
+        # 检查是否需要打开熔断器
+        if (self._failure_counts[receiver_id] >= 
+            self.circuit_breaker_config.failure_threshold):
+            
+            self.circuit_breakers[receiver_id] = CircuitBreakerState.OPEN
+            self.metrics["circuit_breaker_trips"] += 1
+            
+            # 记录熔断器打开时间
+            if not hasattr(self, '_circuit_breaker_open_times'):
+                self._circuit_breaker_open_times = {}
+            self._circuit_breaker_open_times[receiver_id] = time.time()
+            
+            logging.warning(f"Circuit breaker opened for {receiver_id}")
+            
+            # 发送告警
+            await self.alerting_system.send_alert(
+                f"Circuit breaker opened for {receiver_id} due to repeated failures"
+            )
+    
+    async def _performance_monitor_task(self):
+        """性能监控任务"""
+        while self.running:
+            try:
+                await asyncio.sleep(30)  # 每30秒收集一次指标
+                
+                # 收集性能指标
+                metrics = await self.performance_monitor.get_metrics()
+                
+                # 检查性能告警条件
+                if metrics["avg_response_time"] > 5.0:  # 平均响应时间超过5秒
+                    await self.alerting_system.send_alert(
+                        f"High response time detected: {metrics['avg_response_time']:.2f}s"
+                    )
+                
+                if metrics["error_rate"] > 0.1:  # 错误率超过10%
+                    await self.alerting_system.send_alert(
+                        f"High error rate detected: {metrics['error_rate']:.2%}"
+                    )
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logging.error(f"Performance monitor error: {str(e)}")
+
+class CircuitBreakerOpenException(Exception):
+    """熔断器打开异常"""
+    pass
+
+class PerformanceMonitor:
+    """性能监控器"""
+    
+    def __init__(self):
+        self.response_times = deque(maxlen=1000)  # 保留最近1000次响应时间
+        self.success_count = 0
+        self.failure_count = 0
+        
+    async def record_success(self, message_id: str, response_time: float):
+        """记录成功响应"""
+        self.response_times.append(response_time)
+        self.success_count += 1
+        
+    async def record_failure(self, message_id: str, error: Exception):
+        """记录失败响应"""
+        self.failure_count += 1
+    
+    async def get_metrics(self) -> Dict[str, float]:
+        """获取性能指标"""
+        if not self.response_times:
+            return {
+                "avg_response_time": 0.0,
+                "p95_response_time": 0.0,
+                "error_rate": 0.0,
+                "throughput": 0.0
+            }
+        
+        response_times = list(self.response_times)
+        total_requests = self.success_count + self.failure_count
+        
+        return {
+            "avg_response_time": sum(response_times) / len(response_times),
+            "p95_response_time": sorted(response_times)[int(len(response_times) * 0.95)],
+            "error_rate": self.failure_count / total_requests if total_requests > 0 else 0.0,
+            "throughput": total_requests / 60  # 每分钟请求数
+        }
+    
+    async def close(self):
+        """关闭监控器"""
+        pass
+
+class AlertingSystem:
+    """告警系统"""
+    
+    def __init__(self):
+        self.alerts_sent = []
+        
+    async def send_alert(self, message: str):
+        """发送告警"""
+        alert = {
+            "timestamp": time.time(),
+            "message": message,
+            "severity": "WARNING"
+        }
+        
+        self.alerts_sent.append(alert)
+        logging.warning(f"ALERT: {message}")
+    
+    async def close(self):
+        """关闭告警系统"""
+        pass
+```
+
+### 6.4 容错配置
+
+```python
+# 预定义配置
+PRODUCTION_CONFIG = {
+    "retry_config": RetryConfig(
+        max_attempts=5,
+        initial_delay=2.0,
+        max_delay=300.0,
+        backoff_factor=2.0,
+        jitter=True
+    ),
+    "dead_letter_config": DeadLetterConfig(
+        enabled=True,
+        max_retention_hours=72,
+        alerting_threshold=20,
+        cleanup_interval=1800
+    ),
+    "circuit_breaker_config": CircuitBreakerConfig(
+        failure_threshold=10,
+        recovery_timeout=120,
+        half_open_max_calls=5
+    )
+}
+
+DEVELOPMENT_CONFIG = {
+    "retry_config": RetryConfig(
+        max_attempts=3,
+        initial_delay=1.0,
+        max_delay=60.0,
+        backoff_factor=1.5,
+        jitter=True
+    ),
+    "dead_letter_config": DeadLetterConfig(
+        enabled=True,
+        max_retention_hours=24,
+        alerting_threshold=5,
+        cleanup_interval=3600
+    ),
+    "circuit_breaker_config": CircuitBreakerConfig(
+        failure_threshold=5,
+        recovery_timeout=60,
+        half_open_max_calls=3
+    )
+}
+
+TESTING_CONFIG = {
+    "retry_config": RetryConfig(
+        max_attempts=2,
+        initial_delay=0.1,
+        max_delay=1.0,
+        backoff_factor=1.2,
+        jitter=False
+    ),
+    "dead_letter_config": DeadLetterConfig(
+        enabled=False
+    ),
+    "circuit_breaker_config": CircuitBreakerConfig(
+        failure_threshold=3,
+        recovery_timeout=30,
+        half_open_max_calls=2
+    )
+}
+```
+
+### 6.5 容错使用示例
+
+```python
+async def fault_tolerant_example():
+    """容错通信示例"""
+    
+    # 创建容错通信总线
+    config = PRODUCTION_CONFIG
+    bus = FaultTolerantCommunicationBus(
+        retry_config=config["retry_config"],
+        dead_letter_config=config["dead_letter_config"],
+        circuit_breaker_config=config["circuit_breaker_config"]
+    )
+    
+    # 启动总线
+    await bus.start()
+    
+    try:
+        # 订阅消息
+        async def handle_message(message: AgentMessage):
+            # 模拟可能的处理失败
+            import random
+            if random.random() < 0.1:  # 10%的失败率
+                raise Exception("Simulated processing failure")
+            print(f"Received message: {message.message_id}")
+        
+        await bus.subscribe("TestAgent-001", handle_message)
+        
+        # 发送容错消息
+        message = AgentMessage(
+            sender_id="CodeAgent-001",
+            receiver_id="TestAgent-001",
+            message_type=MessageType.TASK_REQUEST,
+            payload={"task": "run_tests"},
+            priority=MessagePriority.HIGH,
+            timeout=30,
+            max_retries=3
+        )
+        
+        # 发布消息（会自动处理重试和容错）
+        await bus.publish(message)
+        
+        # 等待处理完成
+        await asyncio.sleep(5)
+        
+        # 获取性能指标
+        metrics = await bus.performance_monitor.get_metrics()
+        print(f"Performance metrics: {metrics}")
+        
+    finally:
+        # 停止总线
+        await bus.stop()
+```
+
+---
+
+### 6.6 通信协议示例
 
 ```python
 # CodeAgent请求KBAgent检索知识
