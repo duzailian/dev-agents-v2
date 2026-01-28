@@ -356,7 +356,664 @@ flowchart TD
 
 ---
 
-## 6. 循环控制机制与实现伪代码
+## 6. 收敛判断条件量化标准
+
+### 6.1 ConvergenceCriteria数据模型
+
+为解决状态机中"无改进""收敛"等条件定义模糊的问题，设计了ConvergenceCriteria数据模型：
+
+```python
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Union, Literal
+from enum import Enum
+import numpy as np
+from datetime import datetime, timedelta
+
+class ConvergenceType(Enum):
+    """收敛类型"""
+    IMPROVEMENT_BASED = "improvement_based"     # 基于改进的收敛
+    STABILITY_BASED = "stability_based"        # 基于稳定性的收敛
+    THRESHOLD_BASED = "threshold_based"       # 基于阈值的收敛
+    HYBRID = "hybrid"                         # 混合模式
+
+class TestResultStatus(Enum):
+    """测试结果状态"""
+    PASS = "pass"
+    FAIL = "fail"
+    SKIP = "skip"
+    ERROR = "error"
+
+@dataclass
+class ConvergenceCriteria:
+    """收敛判断标准"""
+    
+    # 基础配置
+    convergence_type: ConvergenceType = ConvergenceType.HYBRID
+    max_iterations: int = 10
+    timeout_minutes: int = 120
+    
+    # 改进阈值配置
+    improvement_threshold: float = 0.05  # 5%改进阈值
+    regression_threshold: float = 0.02   # 2%回归阈值
+    
+    # 稳定性窗口配置
+    stability_window: int = 3            # 稳定性窗口大小
+    stability_threshold: float = 0.03    # 稳定性阈值（3%）
+    
+    # 测试通过率配置
+    target_pass_rate: float = 0.95       # 目标通过率95%
+    min_pass_rate: float = 0.80         # 最小可接受通过率80%
+    
+    # 性能指标配置
+    performance_degradation_threshold: float = 0.05  # 性能退化阈值
+    performance_improvement_threshold: float = 0.02  # 性能改进阈值
+    
+    # 置信度配置
+    min_confidence_score: float = 0.7
+    success_confidence_threshold: float = 0.85
+    
+    # 质量控制
+    min_test_count: int = 10            # 最小测试数量
+    max_consecutive_failures: int = 3   # 最大连续失败次数
+    
+    # 熔断配置
+    circuit_breaker_threshold: int = 5  # 熔断阈值
+    circuit_breaker_timeout: int = 30  # 熔断超时（分钟）
+    
+    def to_dict(self) -> Dict:
+        """转换为字典格式"""
+        return {
+            "convergence_type": self.convergence_type.value,
+            "max_iterations": self.max_iterations,
+            "timeout_minutes": self.timeout_minutes,
+            "improvement_threshold": self.improvement_threshold,
+            "regression_threshold": self.regression_threshold,
+            "stability_window": self.stability_window,
+            "stability_threshold": self.stability_threshold,
+            "target_pass_rate": self.target_pass_rate,
+            "min_pass_rate": self.min_pass_rate,
+            "performance_degradation_threshold": self.performance_degradation_threshold,
+            "performance_improvement_threshold": self.performance_improvement_threshold,
+            "min_confidence_score": self.min_confidence_score,
+            "success_confidence_threshold": self.success_confidence_threshold,
+            "min_test_count": self.min_test_count,
+            "max_consecutive_failures": self.max_consecutive_failures,
+            "circuit_breaker_threshold": self.circuit_breaker_threshold,
+            "circuit_breaker_timeout": self.circuit_breaker_timeout
+        }
+
+@dataclass
+class TestResult:
+    """测试结果数据"""
+    timestamp: datetime
+    iteration: int
+    test_count: int
+    pass_count: int
+    fail_count: int
+    skip_count: int
+    error_count: int
+    pass_rate: float
+    execution_time: float
+    performance_score: float
+    confidence_score: float
+    regression_detected: bool = False
+    performance_degradation: float = 0.0
+
+@dataclass
+class ConvergenceAnalysis:
+    """收敛分析结果"""
+    is_converged: bool
+    convergence_score: float  # 0-1, 越高越收敛
+    improvement_trend: Literal["improving", "stable", "declining", "mixed"]
+    stability_score: float    # 0-1, 越高越稳定
+    confidence_level: float  # 0-1
+    reasons: List[str]
+    recommendations: List[str]
+    
+    # 详细指标
+    pass_rate_trend: List[float]
+    performance_trend: List[float]
+    confidence_trend: List[float]
+    regression_count: int
+    total_improvements: int
+
+# 预定义收敛标准
+STRICT_CONVERGENCE = ConvergenceCriteria(
+    convergence_type=ConvergenceType.HYBRID,
+    max_iterations=15,
+    improvement_threshold=0.03,    # 3%改进阈值
+    stability_window=5,            # 5次迭代稳定性
+    target_pass_rate=0.98,        # 98%通过率
+    success_confidence_threshold=0.9
+)
+
+BALANCED_CONVERGENCE = ConvergenceCriteria(
+    convergence_type=ConvergenceType.HYBRID,
+    max_iterations=10,
+    improvement_threshold=0.05,    # 5%改进阈值
+    stability_window=3,            # 3次迭代稳定性
+    target_pass_rate=0.95,        # 95%通过率
+    success_confidence_threshold=0.85
+)
+
+AGGRESSIVE_CONVERGENCE = ConvergenceCriteria(
+    convergence_type=ConvergenceType.IMPROVEMENT_BASED,
+    max_iterations=5,
+    improvement_threshold=0.02,    # 2%改进阈值
+    target_pass_rate=0.90,        # 90%通过率
+    success_confidence_threshold=0.8
+)
+```
+
+### 6.2 收敛度评分算法
+
+```python
+class ConvergenceAnalyzer:
+    """收敛分析器"""
+    
+    def __init__(self, criteria: ConvergenceCriteria):
+        self.criteria = criteria
+        self.history: List[TestResult] = []
+        
+    def add_test_result(self, result: TestResult):
+        """添加测试结果到历史记录"""
+        self.history.append(result)
+        
+        # 保持历史记录在合理范围内
+        if len(self.history) > self.criteria.stability_window * 2:
+            self.history = self.history[-self.criteria.stability_window * 2:]
+    
+    def analyze_convergence(self) -> ConvergenceAnalysis:
+        """分析收敛性"""
+        if len(self.history) < 2:
+            return ConvergenceAnalysis(
+                is_converged=False,
+                convergence_score=0.0,
+                improvement_trend="stable",
+                stability_score=0.0,
+                confidence_level=0.0,
+                reasons=["历史数据不足"],
+                recommendations=["继续执行更多迭代"],
+                pass_rate_trend=[],
+                performance_trend=[],
+                confidence_trend=[],
+                regression_count=0,
+                total_improvements=0
+            )
+        
+        # 计算各项指标
+        convergence_score = self._calculate_convergence_score()
+        improvement_trend = self._analyze_improvement_trend()
+        stability_score = self._calculate_stability_score()
+        confidence_level = self._calculate_confidence_level()
+        
+        # 确定收敛状态
+        is_converged = self._determine_convergence(
+            convergence_score, improvement_trend, stability_score, confidence_level
+        )
+        
+        # 生成分析原因和建议
+        reasons, recommendations = self._generate_analysis(
+            convergence_score, improvement_trend, stability_score, confidence_level
+        )
+        
+        # 提取趋势数据
+        pass_rate_trend = [r.pass_rate for r in self.history]
+        performance_trend = [r.performance_score for r in self.history]
+        confidence_trend = [r.confidence_score for r in self.history]
+        
+        regression_count = sum(1 for r in self.history if r.regression_detected)
+        total_improvements = self._count_improvements()
+        
+        return ConvergenceAnalysis(
+            is_converged=is_converged,
+            convergence_score=convergence_score,
+            improvement_trend=improvement_trend,
+            stability_score=stability_score,
+            confidence_level=confidence_level,
+            reasons=reasons,
+            recommendations=recommendations,
+            pass_rate_trend=pass_rate_trend,
+            performance_trend=performance_trend,
+            confidence_trend=confidence_trend,
+            regression_count=regression_count,
+            total_improvements=total_improvements
+        )
+    
+    def _calculate_convergence_score(self) -> float:
+        """计算收敛评分 (0-1)"""
+        if len(self.history) < 2:
+            return 0.0
+        
+        scores = []
+        
+        # 1. 通过率趋势评分
+        pass_rate_score = self._evaluate_pass_rate_trend()
+        scores.append(pass_rate_score)
+        
+        # 2. 稳定性评分
+        stability_score = self._calculate_stability_score()
+        scores.append(stability_score)
+        
+        # 3. 置信度评分
+        confidence_score = self._evaluate_confidence_trend()
+        scores.append(confidence_score)
+        
+        # 4. 性能趋势评分
+        performance_score = self._evaluate_performance_trend()
+        scores.append(performance_score)
+        
+        # 5. 回归控制评分
+        regression_score = self._evaluate_regression_control()
+        scores.append(regression_score)
+        
+        # 加权平均
+        weights = [0.3, 0.25, 0.2, 0.15, 0.1]  # 各指标权重
+        return sum(score * weight for score, weight in zip(scores, weights))
+    
+    def _evaluate_pass_rate_trend(self) -> float:
+        """评估通过率趋势"""
+        if len(self.history) < 2:
+            return 0.0
+        
+        recent_results = self.history[-min(5, len(self.history)):]
+        pass_rates = [r.pass_rate for r in recent_results]
+        
+        # 计算趋势
+        if len(pass_rates) >= 3:
+            # 使用线性回归计算趋势
+            x = np.arange(len(pass_rates))
+            slope = np.polyfit(x, pass_rates, 1)[0]
+            
+            # 基于斜率和最终通过率计算评分
+            final_pass_rate = pass_rates[-1]
+            if final_pass_rate >= self.criteria.target_pass_rate:
+                trend_bonus = min(slope * 10, 0.2)  # 正向趋势加分
+                return min(1.0, 0.8 + trend_bonus)
+            elif final_pass_rate >= self.criteria.min_pass_rate:
+                return 0.5
+            else:
+                return 0.2
+        else:
+            # 数据点不足，基于当前通过率评分
+            current_rate = pass_rates[-1]
+            if current_rate >= self.criteria.target_pass_rate:
+                return 0.8
+            elif current_rate >= self.criteria.min_pass_rate:
+                return 0.5
+            else:
+                return 0.2
+    
+    def _calculate_stability_score(self) -> float:
+        """计算稳定性评分"""
+        if len(self.history) < self.criteria.stability_window:
+            return 0.0
+        
+        window_results = self.history[-self.criteria.stability_window:]
+        pass_rates = [r.pass_rate for r in window_results]
+        
+        # 计算变异系数
+        mean_rate = np.mean(pass_rates)
+        if mean_rate == 0:
+            return 0.0
+        
+        std_rate = np.std(pass_rates)
+        cv = std_rate / mean_rate  # 变异系数
+        
+        # 变异系数越小，稳定性越高
+        if cv <= self.criteria.stability_threshold:
+            return 1.0
+        elif cv <= self.criteria.stability_threshold * 2:
+            return 0.7
+        elif cv <= self.criteria.stability_threshold * 3:
+            return 0.4
+        else:
+            return 0.1
+    
+    def _evaluate_confidence_trend(self) -> float:
+        """评估置信度趋势"""
+        if len(self.history) < 2:
+            return 0.0
+        
+        recent_confidences = [r.confidence_score for r in self.history[-3:]]
+        avg_confidence = np.mean(recent_confidences)
+        
+        # 基于平均置信度评分
+        if avg_confidence >= self.criteria.success_confidence_threshold:
+            return 1.0
+        elif avg_confidence >= self.criteria.min_confidence_score:
+            return 0.7
+        else:
+            return 0.3
+    
+    def _evaluate_performance_trend(self) -> float:
+        """评估性能趋势"""
+        if len(self.history) < 2:
+            return 0.0
+        
+        recent_performance = [r.performance_score for r in self.history[-3:]]
+        
+        # 检查性能退化
+        max_degradation = max(r.performance_degradation for r in self.history)
+        if max_degradation > self.criteria.performance_degradation_threshold:
+            return 0.3  # 性能严重退化
+        
+        # 检查性能改进
+        if len(recent_performance) >= 2:
+            performance_trend = recent_performance[-1] - recent_performance[0]
+            if performance_trend >= self.criteria.performance_improvement_threshold:
+                return 0.9  # 性能有改进
+            elif performance_trend >= -self.criteria.performance_degradation_threshold:
+                return 0.7  # 性能稳定
+            else:
+                return 0.4  # 性能轻微退化
+        
+        return 0.5
+    
+    def _evaluate_regression_control(self) -> float:
+        """评估回归控制"""
+        recent_regressions = sum(1 for r in self.history[-3:] if r.regression_detected)
+        
+        if recent_regressions == 0:
+            return 1.0
+        elif recent_regressions == 1:
+            return 0.6
+        else:
+            return 0.2
+    
+    def _analyze_improvement_trend(self) -> Literal["improving", "stable", "declining", "mixed"]:
+        """分析改进趋势"""
+        if len(self.history) < 3:
+            return "stable"
+        
+        recent_pass_rates = [r.pass_rate for r in self.history[-5:]]
+        
+        # 计算趋势
+        x = np.arange(len(recent_pass_rates))
+        slope = np.polyfit(x, recent_pass_rates, 1)[0]
+        
+        if slope > self.criteria.improvement_threshold:
+            return "improving"
+        elif slope < -self.criteria.improvement_threshold:
+            return "declining"
+        elif abs(slope) <= self.criteria.improvement_threshold / 2:
+            return "stable"
+        else:
+            return "mixed"
+    
+    def _calculate_confidence_level(self) -> float:
+        """计算置信度等级"""
+        if len(self.history) < self.criteria.stability_window:
+            return 0.5
+        
+        # 基于历史一致性和数据质量
+        recent_results = self.history[-self.criteria.stability_window:]
+        
+        # 检查测试数量是否充足
+        avg_test_count = np.mean([r.test_count for r in recent_results])
+        if avg_test_count < self.criteria.min_test_count:
+            test_quality_score = 0.5
+        else:
+            test_quality_score = 1.0
+        
+        # 检查错误率
+        avg_error_rate = np.mean([r.error_count / max(r.test_count, 1) for r in recent_results])
+        if avg_error_rate <= 0.01:
+            error_score = 1.0
+        elif avg_error_rate <= 0.05:
+            error_score = 0.7
+        else:
+            error_score = 0.3
+        
+        # 检查连续失败
+        consecutive_failures = self._count_consecutive_failures()
+        if consecutive_failures == 0:
+            failure_score = 1.0
+        elif consecutive_failures <= 2:
+            failure_score = 0.6
+        else:
+            failure_score = 0.2
+        
+        return (test_quality_score + error_score + failure_score) / 3
+    
+    def _count_consecutive_failures(self) -> int:
+        """计算连续失败次数"""
+        consecutive = 0
+        for result in reversed(self.history):
+            if result.pass_rate < 0.5:  # 通过率低于50%视为失败
+                consecutive += 1
+            else:
+                break
+        return consecutive
+    
+    def _determine_convergence(self, 
+                             convergence_score: float,
+                             improvement_trend: str,
+                             stability_score: float,
+                             confidence_level: float) -> bool:
+        """确定是否收敛"""
+        current_iteration = len(self.history)
+        
+        # 快速收敛条件
+        if (current_iteration >= 3 and 
+            convergence_score >= 0.9 and 
+            stability_score >= 0.8 and
+            improvement_trend in ["improving", "stable"]):
+            return True
+        
+        # 标准收敛条件
+        if (current_iteration >= self.criteria.stability_window and
+            convergence_score >= 0.7 and
+            stability_score >= 0.6 and
+            confidence_level >= 0.6):
+            
+            # 检查是否满足基础条件
+            latest_result = self.history[-1]
+            if (latest_result.pass_rate >= self.criteria.min_pass_rate and
+                latest_result.confidence_score >= self.criteria.min_confidence_score):
+                return True
+        
+        # 保守收敛条件（避免无限循环）
+        if (current_iteration >= self.criteria.max_iterations * 0.8 and
+            convergence_score >= 0.6 and
+            stability_score >= 0.5):
+            return True
+        
+        return False
+    
+    def _generate_analysis(self,
+                          convergence_score: float,
+                          improvement_trend: str,
+                          stability_score: float,
+                          confidence_level: float) -> tuple[List[str], List[str]]:
+        """生成分析原因和建议"""
+        reasons = []
+        recommendations = []
+        
+        # 基于收敛评分分析
+        if convergence_score >= 0.8:
+            reasons.append("收敛评分良好")
+        elif convergence_score >= 0.6:
+            reasons.append("收敛评分一般")
+        else:
+            reasons.append("收敛评分较低")
+            recommendations.append("需要更多改进才能收敛")
+        
+        # 基于改进趋势分析
+        if improvement_trend == "improving":
+            reasons.append("测试通过率呈改进趋势")
+        elif improvement_trend == "stable":
+            reasons.append("测试通过率保持稳定")
+        elif improvement_trend == "declining":
+            reasons.append("测试通过率呈下降趋势")
+            recommendations.append("需要检查代码修改是否引入了问题")
+        else:
+            reasons.append("测试通过率趋势不明确")
+            recommendations.append("需要更多数据来确定趋势")
+        
+        # 基于稳定性分析
+        if stability_score >= 0.8:
+            reasons.append("结果稳定性很好")
+        elif stability_score >= 0.5:
+            reasons.append("结果稳定性一般")
+            recommendations.append("考虑增加稳定性窗口大小")
+        else:
+            reasons.append("结果稳定性较差")
+            recommendations.append("需要重新评估测试环境和方法")
+        
+        # 基于置信度分析
+        if confidence_level >= 0.8:
+            reasons.append("分析置信度高")
+        elif confidence_level >= 0.6:
+            reasons.append("分析置信度中等")
+        else:
+            reasons.append("分析置信度较低")
+            recommendations.append("增加测试用例数量以提高置信度")
+        
+        # 基于连续失败分析
+        consecutive_failures = self._count_consecutive_failures()
+        if consecutive_failures >= self.criteria.max_consecutive_failures:
+            recommendations.append(f"连续{consecutive_failures}次测试失败，考虑触发熔断")
+        
+        return reasons, recommendations
+    
+    def _count_improvements(self) -> int:
+        """统计改进次数"""
+        improvements = 0
+        if len(self.history) < 2:
+            return improvements
+        
+        for i in range(1, len(self.history)):
+            current = self.history[i]
+            previous = self.history[i-1]
+            
+            # 通过率改进
+            if current.pass_rate > previous.pass_rate + self.criteria.improvement_threshold:
+                improvements += 1
+            
+            # 置信度改进
+            if current.confidence_score > previous.confidence_score + 0.05:
+                improvements += 1
+        
+        return improvements
+```
+
+### 6.3 收敛判断集成示例
+
+```python
+class EnhancedStateMachineOrchestrator:
+    """增强的状态机编排器，集成收敛判断"""
+    
+    def __init__(self, criteria: ConvergenceCriteria):
+        self.convergence_analyzer = ConvergenceAnalyzer(criteria)
+        self.criteria = criteria
+        
+    async def check_convergence(self, context) -> tuple[bool, str]:
+        """增强的收敛检查"""
+        # 创建当前测试结果
+        current_result = TestResult(
+            timestamp=datetime.now(),
+            iteration=context.iteration_index,
+            test_count=context.test_result.get("total_tests", 0),
+            pass_count=context.test_result.get("passed_tests", 0),
+            fail_count=context.test_result.get("failed_tests", 0),
+            skip_count=context.test_result.get("skipped_tests", 0),
+            error_count=context.test_result.get("error_tests", 0),
+            pass_rate=context.test_result.get("pass_rate", 0.0),
+            execution_time=context.test_result.get("execution_time", 0.0),
+            performance_score=context.test_result.get("performance_score", 0.5),
+            confidence_score=context.decision.confidence if context.decision else 0.5,
+            regression_detected=context.test_result.get("regression_detected", False),
+            performance_degradation=context.test_result.get("performance_degradation", 0.0)
+        )
+        
+        # 添加到分析器
+        self.convergence_analyzer.add_test_result(current_result)
+        
+        # 执行收敛分析
+        analysis = self.convergence_analyzer.analyze_convergence()
+        
+        # 记录收敛分析结果
+        context.decision_trace.append({
+            "timestamp": datetime.now().isoformat(),
+            "type": "convergence_analysis",
+            "iteration": context.iteration_index,
+            "analysis": {
+                "is_converged": analysis.is_converged,
+                "convergence_score": analysis.convergence_score,
+                "improvement_trend": analysis.improvement_trend,
+                "stability_score": analysis.stability_score,
+                "confidence_level": analysis.confidence_level,
+                "reasons": analysis.reasons,
+                "recommendations": analysis.recommendations
+            }
+        })
+        
+        # 输出分析日志
+        print(f"\n=== 收敛分析 (第{context.iteration_index}次迭代) ===")
+        print(f"收敛评分: {analysis.convergence_score:.3f}")
+        print(f"改进趋势: {analysis.improvement_trend}")
+        print(f"稳定性: {analysis.stability_score:.3f}")
+        print(f"置信度: {analysis.confidence_level:.3f}")
+        print(f"是否收敛: {'是' if analysis.is_converged else '否'}")
+        
+        if analysis.reasons:
+            print("分析原因:")
+            for reason in analysis.reasons:
+                print(f"  - {reason}")
+        
+        if analysis.recommendations:
+            print("建议:")
+            for rec in analysis.recommendations:
+                print(f"  - {rec}")
+        
+        # 判断是否继续
+        if analysis.is_converged:
+            return True, "converged"
+        
+        # 检查是否达到最大迭代次数
+        if context.iteration_index >= self.criteria.max_iterations:
+            return False, "max_iterations_reached"
+        
+        # 检查是否触发熔断
+        if (analysis.regression_count >= self.criteria.circuit_breaker_threshold or
+            self.convergence_analyzer._count_consecutive_failures() >= self.criteria.max_consecutive_failures):
+            return False, "circuit_breaker_triggered"
+        
+        # 检查超时
+        if self._check_timeout():
+            return False, "timeout"
+        
+        return False, "continue_iteration"
+    
+    def _check_timeout(self) -> bool:
+        """检查是否超时"""
+        if not self.convergence_analyzer.history:
+            return False
+        
+        start_time = self.convergence_analyzer.history[0].timestamp
+        current_time = datetime.now()
+        elapsed_minutes = (current_time - start_time).total_seconds() / 60
+        
+        return elapsed_minutes >= self.criteria.timeout_minutes
+
+# 使用示例
+async def example_with_convergence():
+    """使用收敛判断的示例"""
+    
+    # 创建收敛标准
+    criteria = BALANCED_CONVERGENCE
+    
+    # 创建状态机
+    orchestrator = EnhancedStateMachineOrchestrator(criteria)
+    
+    # 运行任务（会包含收敛检查）
+    # ...
+```
+
+---
+
+## 7. 循环控制机制与实现伪代码
 
 ### 6.1 核心控制逻辑伪代码
 

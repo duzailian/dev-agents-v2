@@ -344,6 +344,702 @@ firmware_stacks:
 }
 ```
 
+## 3.4 产品线隔离与检索策略
+
+### 3.4.1 ProductLineProfile数据模型
+
+为解决多产品线知识库的高效检索问题，设计了ProductLineProfile模型：
+
+```python
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Union
+from enum import Enum
+import json
+
+class CompatibilityLevel(Enum):
+    """产品线兼容性级别"""
+    EXACT = "exact"           # 完全匹配
+    FAMILY = "family"         # 同系列产品兼容
+    ARCH = "architecture"      # 架构级兼容
+    GENERIC = "generic"       # 通用解决方案
+
+@dataclass
+class ProductLineProfile:
+    """产品线档案"""
+    profile_id: str
+    product_line_tags: Dict[str, Union[str, List[str]]]
+    retrieval_priority: int  # 1-10, 10为最高
+    weight_multipliers: Dict[str, float]
+    compatibility_matrix: Dict[str, CompatibilityLevel]
+    
+    # 检索性能优化
+    cache_ttl: int = 3600  # 缓存时间（秒）
+    max_candidates: int = 100  # 最大候选结果数
+    
+    # 质量控制
+    min_confidence_score: float = 0.7
+    required_success_rate: float = 0.8
+    
+    def to_dict(self) -> Dict:
+        """转换为字典格式"""
+        return {
+            "profile_id": self.profile_id,
+            "product_line_tags": self.product_line_tags,
+            "retrieval_priority": self.retrieval_priority,
+            "weight_multipliers": self.weight_multipliers,
+            "compatibility_matrix": {
+                k: v.value for k, v in self.compatibility_matrix.items()
+            },
+            "cache_ttl": self.cache_ttl,
+            "max_candidates": self.max_candidates,
+            "min_confidence_score": self.min_confidence_score,
+            "required_success_rate": self.required_success_rate
+        }
+
+# 典型产品线档案示例
+TIGER_LAKE_PROFILE = ProductLineProfile(
+    profile_id="tiger_lake_uefi_server",
+    product_line_tags={
+        "soc_type": "Tiger_Lake",
+        "firmware_stack": "UEFI_2.8",
+        "chipset": ["HM570", "WM590"],
+        "platform": "Server"
+    },
+    retrieval_priority=9,
+    weight_multipliers={
+        "soc_type": 1.0,
+        "firmware_stack": 0.9,
+        "chipset": 0.8,
+        "platform": 0.7
+    },
+    compatibility_matrix={
+        "Tiger_Lake": CompatibilityLevel.EXACT,
+        "Alder_Lake": CompatibilityLevel.FAMILY,
+        "Generic_x86_64": CompatibilityLevel.ARCH,
+        "UEFI_2.9": CompatibilityLevel.FAMILY,
+        "EDK2": CompatibilityLevel.ARCH
+    },
+    cache_ttl=7200,  # 2小时缓存
+    max_candidates=50,
+    min_confidence_score=0.8,
+    required_success_rate=0.85
+)
+
+EPYC_PROFILE = ProductLineProfile(
+    profile_id="epyc_bmc_server",
+    product_line_tags={
+        "soc_type": "EPYC_Milan",
+        "firmware_stack": ["OpenBMC", "UEFI_2.8"],
+        "chipset": ["TRX40", "X570"],
+        "platform": "Server"
+    },
+    retrieval_priority=10,
+    weight_multipliers={
+        "soc_type": 1.0,
+        "firmware_stack": 0.95,
+        "chipset": 0.75,
+        "platform": 0.6
+    },
+    compatibility_matrix={
+        "EPYC_Milan": CompatibilityLevel.EXACT,
+        "EPYC_Genoa": CompatibilityLevel.FAMILY,
+        "EPYC_Bergamo": CompatibilityLevel.FAMILY,
+        "OpenBMC": CompatibilityLevel.EXACT,
+        "IPMI": CompatibilityLevel.FAMILY
+    },
+    cache_ttl=10800,  # 3小时缓存
+    max_candidates=80,
+    min_confidence_score=0.85,
+    required_success_rate=0.9
+)
+
+GENERIC_PROFILE = ProductLineProfile(
+    profile_id="generic_x86_64",
+    product_line_tags={
+        "soc_type": "Generic_x86_64",
+        "firmware_stack": "Generic",
+        "platform": "Generic"
+    },
+    retrieval_priority=1,
+    weight_multipliers={
+        "soc_type": 0.5,
+        "firmware_stack": 0.4,
+        "platform": 0.3
+    },
+    compatibility_matrix={
+        "Generic_x86_64": CompatibilityLevel.EXACT,
+        "Generic": CompatibilityLevel.EXACT
+    },
+    cache_ttl=1800,  # 30分钟缓存
+    max_candidates=20,
+    min_confidence_score=0.6,
+    required_success_rate=0.7
+)
+```
+
+### 3.4.2 ProductLineMatcher算法
+
+```python
+import numpy as np
+from typing import Tuple, List, Dict
+from dataclasses import dataclass
+
+@dataclass
+class MatchResult:
+    """匹配结果"""
+    knowledge_unit_id: str
+    similarity_score: float
+    compatibility_level: CompatibilityLevel
+    matched_tags: Dict[str, str]
+    confidence_adjustment: float
+
+class ProductLineMatcher:
+    """产品线匹配器"""
+    
+    def __init__(self, profile: ProductLineProfile):
+        self.profile = profile
+        self.tag_weights = profile.weight_multipliers
+        
+    def calculate_tag_similarity(self, 
+                                unit_tags: Dict[str, str], 
+                                profile_tags: Dict[str, Union[str, List[str]]]) -> float:
+        """计算标签相似度"""
+        total_weight = 0.0
+        weighted_score = 0.0
+        
+        for tag_type, profile_value in profile_tags.items():
+            if tag_type not in unit_tags:
+                continue
+                
+            weight = self.tag_weights.get(tag_type, 0.5)
+            unit_value = unit_tags[tag_type]
+            
+            # 精确匹配
+            if isinstance(profile_value, str):
+                if unit_value == profile_value:
+                    weighted_score += weight * 1.0
+                elif unit_value in self.profile.compatibility_matrix:
+                    compatibility = self.profile.compatibility_matrix[unit_value]
+                    weighted_score += weight * self._get_compatibility_score(compatibility)
+                else:
+                    weighted_score += weight * 0.0
+            
+            # 列表匹配
+            elif isinstance(profile_value, list):
+                if unit_value in profile_value:
+                    weighted_score += weight * 1.0
+                else:
+                    # 查找兼容性
+                    for compatible_value in profile_value:
+                        if compatible_value in self.profile.compatibility_matrix:
+                            compatibility = self.profile.compatibility_matrix[compatible_value]
+                            weighted_score += weight * self._get_compatibility_score(compatibility)
+                            break
+                    else:
+                        weighted_score += weight * 0.0
+            
+            total_weight += weight
+        
+        return weighted_score / total_weight if total_weight > 0 else 0.0
+    
+    def _get_compatibility_score(self, level: CompatibilityLevel) -> float:
+        """获取兼容性评分"""
+        compatibility_scores = {
+            CompatibilityLevel.EXACT: 1.0,
+            CompatibilityLevel.FAMILY: 0.8,
+            CompatibilityLevel.ARCH: 0.6,
+            CompatibilityLevel.GENERIC: 0.4
+        }
+        return compatibility_scores.get(level, 0.0)
+    
+    def match_knowledge_unit(self, unit: Dict) -> MatchResult:
+        """匹配单个知识单元"""
+        unit_tags = unit.get("metadata", {}).get("product_line", {})
+        
+        # 计算相似度
+        similarity_score = self.calculate_tag_similarity(unit_tags, self.profile.product_line_tags)
+        
+        # 确定兼容性级别
+        compatibility_level = self._determine_compatibility_level(unit_tags)
+        
+        # 识别匹配的标签
+        matched_tags = self._find_matched_tags(unit_tags)
+        
+        # 计算置信度调整
+        confidence_adjustment = self._calculate_confidence_adjustment(
+            similarity_score, compatibility_level
+        )
+        
+        return MatchResult(
+            knowledge_unit_id=unit.get("id"),
+            similarity_score=similarity_score,
+            compatibility_level=compatibility_level,
+            matched_tags=matched_tags,
+            confidence_adjustment=confidence_adjustment
+        )
+    
+    def _determine_compatibility_level(self, unit_tags: Dict[str, str]) -> CompatibilityLevel:
+        """确定兼容性级别"""
+        soc_type = unit_tags.get("soc_type")
+        if soc_type and soc_type in self.profile.compatibility_matrix:
+            return self.profile.compatibility_matrix[soc_type]
+        
+        # 检查 firmware_stack 兼容性
+        firmware_stack = unit_tags.get("firmware_stack")
+        if firmware_stack and firmware_stack in self.profile.compatibility_matrix:
+            return self.profile.compatibility_matrix[firmware_stack]
+        
+        return CompatibilityLevel.GENERIC
+    
+    def _find_matched_tags(self, unit_tags: Dict[str, str]) -> Dict[str, str]:
+        """查找匹配的标签"""
+        matched = {}
+        for tag_type, unit_value in unit_tags.items():
+            profile_value = self.profile.product_line_tags.get(tag_type)
+            
+            if isinstance(profile_value, str) and unit_value == profile_value:
+                matched[tag_type] = unit_value
+            elif isinstance(profile_value, list) and unit_value in profile_value:
+                matched[tag_type] = unit_value
+            elif unit_value in self.profile.compatibility_matrix:
+                matched[tag_type] = unit_value
+        
+        return matched
+    
+    def _calculate_confidence_adjustment(self, 
+                                       similarity_score: float, 
+                                       compatibility_level: CompatibilityLevel) -> float:
+        """计算置信度调整"""
+        base_adjustment = {
+            CompatibilityLevel.EXACT: 1.0,
+            CompatibilityLevel.FAMILY: 0.9,
+            CompatibilityLevel.ARCH: 0.8,
+            CompatibilityLevel.GENERIC: 0.6
+        }.get(compatibility_level, 0.5)
+        
+        # 基于相似度进一步调整
+        return base_adjustment * similarity_score
+
+def batch_match_knowledge_units(units: List[Dict], 
+                              profile: ProductLineProfile,
+                              min_score: float = 0.3) -> List[MatchResult]:
+    """批量匹配知识单元"""
+    matcher = ProductLineMatcher(profile)
+    results = []
+    
+    for unit in units:
+        try:
+            result = matcher.match_knowledge_unit(unit)
+            if result.similarity_score >= min_score:
+                results.append(result)
+        except Exception as e:
+            print(f"匹配知识单元 {unit.get('id', 'unknown')} 时出错: {e}")
+            continue
+    
+    # 按相似度排序
+    results.sort(key=lambda x: x.similarity_score, reverse=True)
+    return results
+```
+
+### 3.4.3 RetrievalStrategy配置
+
+```python
+from enum import Enum
+from typing import Callable, Dict, Any
+import time
+import hashlib
+
+class RetrievalMode(Enum):
+    """检索模式"""
+    STRICT = "strict"          # 严格匹配
+    BALANCED = "balanced"      # 平衡模式
+    BROAD = "broad"           # 宽泛匹配
+    EXPLORATORY = "exploratory"  # 探索性检索
+
+class CacheStrategy(Enum):
+    """缓存策略"""
+    NONE = "none"
+    MEMORY = "memory"
+    PERSISTENT = "persistent"
+    HYBRID = "hybrid"
+
+@dataclass
+class RetrievalStrategy:
+    """检索策略配置"""
+    strategy_id: str
+    mode: RetrievalMode
+    cache_strategy: CacheStrategy
+    max_results: int = 50
+    timeout_seconds: int = 30
+    
+    # 检索路径配置
+    retrieval_paths: List[str] = None
+    
+    # 动态参数
+    confidence_threshold: float = 0.7
+    similarity_threshold: float = 0.6
+    
+    # 性能优化
+    enable_parallel_search: bool = True
+    max_concurrent_requests: int = 5
+    
+    # 质量控制
+    min_success_rate: float = 0.8
+    max_age_days: int = 365
+    
+    def __post_init__(self):
+        if self.retrieval_paths is None:
+            self.retrieval_paths = [
+                "exact_match",
+                "family_match", 
+                "architecture_match",
+                "generic_match"
+            ]
+    
+    def get_cache_key(self, query: str, profile_id: str) -> str:
+        """生成缓存键"""
+        content = f"{query}:{profile_id}:{self.strategy_id}"
+        return hashlib.md5(content.encode()).hexdigest()
+    
+    def should_use_cache(self) -> bool:
+        """判断是否使用缓存"""
+        return self.cache_strategy in [CacheStrategy.MEMORY, CacheStrategy.HYBRID, CacheStrategy.PERSISTENT]
+
+# 预定义检索策略
+STRICT_RETRIEVAL = RetrievalStrategy(
+    strategy_id="strict_tiger_lake",
+    mode=RetrievalMode.STRICT,
+    cache_strategy=CacheStrategy.PERSISTENT,
+    max_results=20,
+    confidence_threshold=0.8,
+    similarity_threshold=0.7,
+    min_success_rate=0.9,
+    retrieval_paths=["exact_match", "family_match"]
+)
+
+BALANCED_RETRIEVAL = RetrievalStrategy(
+    strategy_id="balanced_server",
+    mode=RetrievalMode.BALANCED,
+    cache_strategy=CacheStrategy.HYBRID,
+    max_results=50,
+    confidence_threshold=0.7,
+    similarity_threshold=0.6,
+    min_success_rate=0.8,
+    enable_parallel_search=True,
+    max_concurrent_requests=3
+)
+
+BROAD_RETRIEVAL = RetrievalStrategy(
+    strategy_id="broad_exploration",
+    mode=RetrievalMode.BROAD,
+    cache_strategy=CacheStrategy.MEMORY,
+    max_results=100,
+    confidence_threshold=0.5,
+    similarity_threshold=0.4,
+    min_success_rate=0.6,
+    retrieval_paths=["exact_match", "family_match", "architecture_match", "generic_match"]
+)
+
+class KnowledgeRetrievalEngine:
+    """知识检索引擎"""
+    
+    def __init__(self, profile: ProductLineProfile, strategy: RetrievalStrategy):
+        self.profile = profile
+        self.strategy = strategy
+        self.cache = {} if strategy.cache_strategy != CacheStrategy.NONE else None
+        
+    async def retrieve_knowledge(self, 
+                                query_text: str, 
+                                additional_filters: Dict = None) -> List[Dict]:
+        """检索知识"""
+        start_time = time.time()
+        
+        # 检查缓存
+        if self.strategy.should_use_cache():
+            cache_key = self.strategy.get_cache_key(query_text, self.profile.profile_id)
+            if cache_key in self.cache:
+                print(f"缓存命中: {cache_key}")
+                return self.cache[cache_key]
+        
+        # 执行检索
+        results = await self._execute_retrieval(query_text, additional_filters)
+        
+        # 应用质量过滤
+        filtered_results = self._apply_quality_filters(results)
+        
+        # 缓存结果
+        if self.strategy.should_use_cache():
+            cache_key = self.strategy.get_cache_key(query_text, self.profile.profile_id)
+            self.cache[cache_key] = filtered_results
+        
+        retrieval_time = time.time() - start_time
+        print(f"检索完成: {len(filtered_results)} 个结果，耗时 {retrieval_time:.2f}s")
+        
+        return filtered_results
+    
+    async def _execute_retrieval(self, 
+                                query_text: str, 
+                                additional_filters: Dict = None) -> List[Dict]:
+        """执行具体检索逻辑"""
+        # 这里是检索的核心实现
+        # 需要集成向量检索和关系数据库查询
+        # 示例实现：
+        
+        results = []
+        
+        # 1. 向量检索
+        vector_results = await self._vector_search(query_text)
+        results.extend(vector_results)
+        
+        # 2. 产品线匹配
+        matched_results = await self._apply_product_line_matching(results)
+        results = matched_results
+        
+        # 3. 应用额外过滤
+        if additional_filters:
+            results = self._apply_additional_filters(results, additional_filters)
+        
+        return results
+    
+    async def _vector_search(self, query_text: str) -> List[Dict]:
+        """向量搜索（模拟实现）"""
+        # 实际实现中会调用Qdrant
+        print(f"执行向量搜索: {query_text}")
+        return []
+    
+    async def _apply_product_line_matching(self, candidates: List[Dict]) -> List[Dict]:
+        """应用产品线匹配"""
+        if not candidates:
+            return []
+        
+        # 使用ProductLineMatcher进行匹配
+        matcher = ProductLineMatcher(self.profile)
+        match_results = []
+        
+        for candidate in candidates:
+            try:
+                match_result = matcher.match_knowledge_unit(candidate)
+                # 调整置信度
+                original_confidence = candidate.get("metadata", {}).get("confidence_score", 0.5)
+                adjusted_confidence = original_confidence * match_result.confidence_adjustment
+                
+                candidate["metadata"]["confidence_score"] = adjusted_confidence
+                candidate["metadata"]["similarity_score"] = match_result.similarity_score
+                candidate["metadata"]["compatibility_level"] = match_result.compatibility_level.value
+                candidate["metadata"]["matched_tags"] = match_result.matched_tags
+                
+                match_results.append(candidate)
+            except Exception as e:
+                print(f"匹配知识单元 {candidate.get('id', 'unknown')} 时出错: {e}")
+                continue
+        
+        # 按相似度和置信度排序
+        match_results.sort(
+            key=lambda x: (
+                x.get("metadata", {}).get("similarity_score", 0),
+                x.get("metadata", {}).get("confidence_score", 0)
+            ),
+            reverse=True
+        )
+        
+        return match_results[:self.strategy.max_results]
+    
+    def _apply_quality_filters(self, results: List[Dict]) -> List[Dict]:
+        """应用质量过滤"""
+        filtered = []
+        
+        for result in results:
+            metadata = result.get("metadata", {})
+            
+            # 置信度过滤
+            confidence = metadata.get("confidence_score", 0)
+            if confidence < self.strategy.confidence_threshold:
+                continue
+            
+            # 相似度过滤
+            similarity = metadata.get("similarity_score", 0)
+            if similarity < self.strategy.similarity_threshold:
+                continue
+            
+            # 成功率过滤
+            execution_result = metadata.get("execution_result", {})
+            success_rate = execution_result.get("success_rate", 0)
+            if success_rate < self.strategy.min_success_rate:
+                continue
+            
+            # 年龄过滤
+            execution_time = execution_result.get("execution_time")
+            if execution_time:
+                age_days = (time.time() - execution_time.timestamp()) / (24 * 3600)
+                if age_days > self.strategy.max_age_days:
+                    continue
+            
+            filtered.append(result)
+        
+        return filtered[:self.strategy.max_results]
+    
+    def _apply_additional_filters(self, results: List[Dict], filters: Dict) -> List[Dict]:
+        """应用额外过滤条件"""
+        filtered = results
+        
+        for filter_key, filter_value in filters.items():
+            filtered = [
+                result for result in filtered
+                if self._matches_filter(result, filter_key, filter_value)
+            ]
+        
+        return filtered
+    
+    def _matches_filter(self, result: Dict, filter_key: str, filter_value: Any) -> bool:
+        """检查是否匹配过滤条件"""
+        # 简化的过滤逻辑实现
+        # 实际中需要更复杂的过滤规则
+        return True
+```
+
+### 3.4.4 检索性能指标
+
+```python
+@dataclass
+class RetrievalMetrics:
+    """检索性能指标"""
+    total_results: int
+    retrieval_time: float
+    cache_hit_rate: float
+    avg_confidence: float
+    avg_similarity: float
+    success_rate: float
+    
+    # 分布指标
+    confidence_distribution: Dict[str, int]  # high/medium/low
+    compatibility_distribution: Dict[str, int]
+    
+    # 性能指标
+    throughput: float  # 结果/秒
+    memory_usage: float  # MB
+    cache_size: int
+
+def calculate_retrieval_metrics(results: List[Dict], 
+                              retrieval_time: float,
+                              cache_info: Dict = None) -> RetrievalMetrics:
+    """计算检索指标"""
+    if not results:
+        return RetrievalMetrics(
+            total_results=0,
+            retrieval_time=retrieval_time,
+            cache_hit_rate=cache_info.get("hit_rate", 0) if cache_info else 0,
+            avg_confidence=0,
+            avg_similarity=0,
+            success_rate=0,
+            confidence_distribution={"high": 0, "medium": 0, "low": 0},
+            compatibility_distribution={},
+            throughput=0,
+            memory_usage=0,
+            cache_size=cache_info.get("size", 0) if cache_info else 0
+        )
+    
+    # 计算基础指标
+    confidences = [r.get("metadata", {}).get("confidence_score", 0) for r in results]
+    similarities = [r.get("metadata", {}).get("similarity_score", 0) for r in results]
+    
+    avg_confidence = sum(confidences) / len(confidences)
+    avg_similarity = sum(similarities) / len(similarities)
+    
+    # 计算分布
+    confidence_dist = {"high": 0, "medium": 0, "low": 0}
+    for conf in confidences:
+        if conf >= 0.8:
+            confidence_dist["high"] += 1
+        elif conf >= 0.5:
+            confidence_dist["medium"] += 1
+        else:
+            confidence_dist["low"] += 1
+    
+    compatibility_dist = {}
+    for result in results:
+        comp_level = result.get("metadata", {}).get("compatibility_level", "unknown")
+        compatibility_dist[comp_level] = compatibility_dist.get(comp_level, 0) + 1
+    
+    # 计算成功率
+    success_rates = [
+        r.get("metadata", {}).get("execution_result", {}).get("success_rate", 0)
+        for r in results
+    ]
+    success_rate = sum(success_rates) / len(success_rates) if success_rates else 0
+    
+    # 计算吞吐量
+    throughput = len(results) / retrieval_time if retrieval_time > 0 else 0
+    
+    return RetrievalMetrics(
+        total_results=len(results),
+        retrieval_time=retrieval_time,
+        cache_hit_rate=cache_info.get("hit_rate", 0) if cache_info else 0,
+        avg_confidence=avg_confidence,
+        avg_similarity=avg_similarity,
+        success_rate=success_rate,
+        confidence_distribution=confidence_dist,
+        compatibility_distribution=compatibility_dist,
+        throughput=throughput,
+        memory_usage=0,  # 需要实际测量
+        cache_size=cache_info.get("size", 0) if cache_info else 0
+    )
+```
+
+### 3.4.5 使用示例
+
+```python
+# 完整的使用示例
+async def example_usage():
+    """使用示例"""
+    
+    # 1. 选择产品线档案
+    profile = TIGER_LAKE_PROFILE
+    
+    # 2. 选择检索策略
+    strategy = BALANCED_RETRIEVAL
+    
+    # 3. 创建检索引擎
+    engine = KnowledgeRetrievalEngine(profile, strategy)
+    
+    # 4. 执行检索
+    query = "PCIe设备初始化问题"
+    additional_filters = {
+        "status": "success",
+        "min_confidence": 0.8
+    }
+    
+    results = await engine.retrieve_knowledge(query, additional_filters)
+    
+    # 5. 分析结果
+    print(f"检索到 {len(results)} 个相关知识单元")
+    
+    for i, result in enumerate(results[:5]):  # 显示前5个结果
+        metadata = result.get("metadata", {})
+        print(f"\n结果 {i+1}:")
+        print(f"  ID: {result.get('id')}")
+        print(f"  标题: {result.get('content', {}).get('title', 'N/A')}")
+        print(f"  置信度: {metadata.get('confidence_score', 0):.3f}")
+        print(f"  相似度: {metadata.get('similarity_score', 0):.3f}")
+        print(f"  兼容性: {metadata.get('compatibility_level', 'N/A')}")
+        print(f"  匹配标签: {metadata.get('matched_tags', {})}")
+        
+        # 显示相关性评分
+        relevance_score = (
+            metadata.get('confidence_score', 0) * 0.6 +
+            metadata.get('similarity_score', 0) * 0.4
+        )
+        print(f"  综合相关性: {relevance_score:.3f}")
+    
+    # 6. 计算性能指标
+    metrics = calculate_retrieval_metrics(results, 0.5)  # 假设检索耗时0.5秒
+    print(f"\n检索性能指标:")
+    print(f"  总结果数: {metrics.total_results}")
+    print(f"  平均置信度: {metrics.avg_confidence:.3f}")
+    print(f"  平均相似度: {metrics.avg_similarity:.3f}")
+    print(f"  成功率: {metrics.success_rate:.3f}")
+    print(f"  吞吐量: {metrics.throughput:.2f} 结果/秒")
+```
+
 ---
 
 ## 4. Qdrant 向量数据库 Schema
