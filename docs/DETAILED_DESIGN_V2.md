@@ -71,6 +71,2815 @@
 - 每个步骤输出结构化日志，至少包含 `task_id`、`iteration_id`、`step`、`status`。
 - 关键结论与决策必须引用证据（日志行、KnowledgeUnit ID或artifact链接）。
 
+### 9.8 基于角色的访问控制（RBAC）
+
+#### 9.8.1 角色定义
+
+系统采用基于角色的访问控制（RBAC）模型，将用户权限与角色绑定，实现细粒度的操作权限管理。
+
+**用户角色（User Roles）**
+
+| 角色 | 描述 | 典型用户 |
+| :--- | :--- | :--- |
+| **Admin** | 系统管理员，拥有最高权限 | DevOps工程师、安全管理员 |
+| **Engineer** | 开发工程师，执行代码分析、修改和测试 | 固件开发人员、AI Agent |
+| **Viewer** | 只读用户，仅能查询状态和结果 | 产品经理、技术评审人员、外部审计员 |
+
+**角色层级关系**
+```mermaid
+graph TD
+    A[Admin] --> B[Engineer]
+    A --> C[Viewer]
+    B --> C
+```
+
+#### 9.8.2 权限定义
+
+**操作权限（Operation Permissions）**
+
+| 操作权限 | 描述 | Admin | Engineer | Viewer |
+| :--- | :--- | :---: | :---: | :---: |
+| `task:query` | 查询任务状态和历史 | ✓ | ✓ | ✓ |
+| `task:create` | 创建新任务 | ✓ | ✓ | ✗ |
+| `task:cancel` | 取消或终止任务 | ✓ | ✓ | ✗ |
+| `code:read` | 读取源代码 | ✓ | ✓ | ✓ |
+| `code:modify` | 修改代码并生成补丁 | ✓ | ✓ | ✗ |
+| `code:commit` | 提交代码变更到仓库 | ✓ | ✗ | ✗ |
+| `patch:view` | 查看补丁内容 | ✓ | ✓ | ✓ |
+| `patch:approve` | 审批或拒绝补丁 | ✓ | ✗ | ✗ |
+| `patch:apply` | 应用已审批的补丁 | ✓ | ✓ | ✗ |
+| `test:execute` | 执行测试用例 | ✓ | ✓ | ✗ |
+| `test:view` | 查看测试结果 | ✓ | ✓ | ✓ |
+| `kb:read` | 读取知识库内容 | ✓ | ✓ | ✓ |
+| `kb:write` | 写入知识单元 | ✓ | ✓ | ✗ |
+| `kb:manage` | 管理知识库（删除、修改元数据） | ✓ | ✗ | ✗ |
+| `audit:view` | 查看审计日志 | ✓ | ✗ | ✗ |
+| `config:view` | 查看系统配置 | ✓ | ✓ | ✗ |
+| `config:modify` | 修改系统配置 | ✓ | ✗ | ✗ |
+
+**权限继承规则**
+- Admin 继承所有 Engineer 和 Viewer 权限
+- Engineer 继承所有 Viewer 权限
+- 特殊权限（如 `code:commit`、`patch:approve`）需要显式授权
+
+#### 9.8.3 权限校验机制
+
+**权限校验接口定义**
+
+```python
+from enum import Enum
+from dataclasses import dataclass
+from typing import List, Optional
+from datetime import datetime
+
+class Permission(Enum):
+    """操作权限枚举"""
+    TASK_QUERY = "task:query"
+    TASK_CREATE = "task:create"
+    TASK_CANCEL = "task:cancel"
+    CODE_READ = "code:read"
+    CODE_MODIFY = "code:modify"
+    CODE_COMMIT = "code:commit"
+    PATCH_VIEW = "patch:view"
+    PATCH_APPROVE = "patch:approve"
+    PATCH_APPLY = "patch:apply"
+    TEST_EXECUTE = "test:execute"
+    TEST_VIEW = "test:view"
+    KB_READ = "kb:read"
+    KB_WRITE = "kb:write"
+    KB_MANAGE = "kb:manage"
+    AUDIT_VIEW = "audit:view"
+    CONFIG_VIEW = "config:view"
+    CONFIG_MODIFY = "config:modify"
+
+class Role(Enum):
+    """角色枚举"""
+    ADMIN = "admin"
+    ENGINEER = "engineer"
+    VIEWER = "viewer"
+
+@dataclass
+class UserContext:
+    """用户上下文信息"""
+    user_id: str
+    roles: List[Role]
+    permissions: List[Permission]
+    department: Optional[str] = None
+    project_scope: Optional[List[str]] = None
+
+@dataclass
+class PermissionResult:
+    """权限校验结果"""
+    allowed: bool
+    reason: Optional[str] = None
+    required_permission: Optional[Permission] = None
+```
+
+**权限校验器实现**
+
+```python
+class RBACValidator:
+    """基于角色的访问控制校验器"""
+
+    # 角色-权限映射表
+    ROLE_PERMISSIONS = {
+        Role.ADMIN: set(Permission),  # 拥有所有权限
+        Role.ENGINEER: {
+            Permission.TASK_QUERY,
+            Permission.TASK_CREATE,
+            Permission.TASK_CANCEL,
+            Permission.CODE_READ,
+            Permission.CODE_MODIFY,
+            Permission.PATCH_VIEW,
+            Permission.TEST_EXECUTE,
+            Permission.TEST_VIEW,
+            Permission.KB_READ,
+            Permission.KB_WRITE,
+            Permission.CONFIG_VIEW,
+        },
+        Role.VIEWER: {
+            Permission.TASK_QUERY,
+            Permission.CODE_READ,
+            Permission.PATCH_VIEW,
+            Permission.TEST_VIEW,
+            Permission.KB_READ,
+        },
+    }
+
+    # 需要特殊审批的权限
+    PRIVILEGED_PERMISSIONS = {
+        Permission.CODE_COMMIT,
+        Permission.PATCH_APPROVE,
+        Permission.CONFIG_MODIFY,
+        Permission.KB_MANAGE,
+        Permission.AUDIT_VIEW,
+    }
+
+    def __init__(self, config: Optional[Dict] = None):
+        self.config = config or {}
+        self.audit_logger = self._init_audit_logger()
+
+    def get_user_permissions(self, user: UserContext) -> set:
+        """获取用户的所有权限（基于角色继承）"""
+        permissions = set()
+        for role in user.roles:
+            permissions.update(self.ROLE_PERMISSIONS.get(role, set()))
+        # 添加用户直接授予的特殊权限
+        permissions.update(user.permissions)
+        return permissions
+
+    def check_permission(
+        self,
+        user: UserContext,
+        permission: Permission,
+        resource: Optional[str] = None,
+        context: Optional[Dict] = None
+    ) -> PermissionResult:
+        """检查用户是否拥有指定权限"""
+        user_permissions = self.get_user_permissions(user)
+
+        # 检查基础权限
+        if permission in user_permissions:
+            # 对于特权权限，需要额外验证
+            if permission in self.PRIVILEGED_PERMISSIONS:
+                return self._check_privileged_access(
+                    user, permission, resource, context
+                )
+            return PermissionResult(allowed=True)
+
+        # 权限不足，记录审计日志
+        self.audit_logger.log_permission_denied(
+            user_id=user.user_id,
+            permission=permission,
+            resource=resource,
+            context=context
+        )
+
+        return PermissionResult(
+            allowed=False,
+            reason=f"User {user.user_id} does not have permission: {permission.value}",
+            required_permission=permission
+        )
+
+    def require_permission(
+        self,
+        user: UserContext,
+        permission: Permission,
+        resource: Optional[str] = None
+    ) -> None:
+        """权限校验失败时抛出异常"""
+        result = self.check_permission(user, permission, resource)
+        if not result.allowed:
+            raise PermissionDeniedError(
+                user_id=user.user_id,
+                permission=permission,
+                reason=result.reason
+            )
+
+    def _check_privileged_access(
+        self,
+        user: UserContext,
+        permission: Permission,
+        resource: Optional[str],
+        context: Optional[Dict]
+    ) -> PermissionResult:
+        """检查特权权限访问"""
+        # 检查是否在允许的时间范围内（如工作时间）
+        if self.config.get("privileged_time_restriction"):
+            if not self._is_within_working_hours():
+                return PermissionResult(
+                    allowed=False,
+                    reason="Privileged access only allowed during working hours"
+                )
+
+        # 检查是否需要多因素认证
+        if self.config.get("privileged_require_mfa"):
+            if not context or not context.get("mfa_verified"):
+                return PermissionResult(
+                    allowed=False,
+                    reason="MFA verification required for privileged access"
+                )
+
+        return PermissionResult(allowed=True)
+
+    def _is_within_working_hours(self) -> bool:
+        """检查是否在允许的工作时间范围内"""
+        import datetime
+        now = datetime.datetime.now()
+        start = datetime.time(9, 0)
+        end = datetime.time(18, 0)
+        return start <= now.time() <= end
+```
+
+**权限拦截策略**
+
+```python
+from functools import wraps
+from fastapi import Request, HTTPException
+
+class PermissionInterceptor:
+    """权限拦截器"""
+
+    def __init__(self, rbac_validator: RBACValidator):
+        self.validator = rbac_validator
+
+    def require(self, permission: Permission, resource_param: str = None):
+        """装饰器：要求特定权限"""
+        def decorator(func):
+            @wraps(func)
+            async def wrapper(*args, **kwargs):
+                request = self._extract_request(args, kwargs)
+                user = self._get_user_from_request(request)
+
+                # 提取资源标识
+                resource = None
+                if resource_param:
+                    resource = kwargs.get(resource_param)
+
+                result = self.validator.check_permission(
+                    user=user,
+                    permission=permission,
+                    resource=resource,
+                    context={"request": request}
+                )
+
+                if not result.allowed:
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "error": "permission_denied",
+                            "message": result.reason,
+                            "required_permission": permission.value
+                        }
+                    )
+
+                return await func(*args, **kwargs)
+            return wrapper
+        return decorator
+
+    def _extract_request(self, args, kwargs) -> Request:
+        """从函数参数中提取FastAPI Request对象"""
+        for arg in args:
+            if isinstance(arg, Request):
+                return arg
+        return kwargs.get("request")
+
+    def _get_user_from_request(self, request: Request) -> UserContext:
+        """从请求中获取用户上下文"""
+        # 从JWT Token或认证头中解析用户信息
+        token = request.headers.get("Authorization")
+        if token and token.startswith("Bearer "):
+            return self._parse_jwt_token(token[7:])
+        raise AuthenticationError("Missing or invalid authorization token")
+```
+
+**权限校验执行点**
+
+| 模块 | 操作 | 执行校验的权限 | 校验时机 |
+| :--- | :--- | :--- | :--- |
+| TaskManager | 创建任务 | `task:create` | 任务创建入口 |
+| TaskManager | 查询任务 | `task:query` | 任务列表/详情查询 |
+| TaskManager | 取消任务 | `task:cancel` | 任务终止请求 |
+| CodeModifier | 读取代码 | `code:read` | 代码仓库访问 |
+| CodeModifier | 生成补丁 | `code:modify` | 补丁生成入口 |
+| CodeModifier | 提交代码 | `code:commit` | Git提交操作 |
+| CodeModifier | 审批补丁 | `patch:approve` | 审批工作流 |
+| TestOrchestrator | 执行测试 | `test:execute` | 测试启动入口 |
+| KBAgent | 写入知识库 | `kb:write` | 知识单元创建 |
+| KBAgent | 管理知识库 | `kb:manage` | 删除/修改操作 |
+| AuditService | 查看审计日志 | `audit:view` | 日志查询请求 |
+
+---
+
+### 9.9 操作审计日志
+
+#### 9.9.1 AuditLog数据模型
+
+**审计日志核心结构**
+
+```python
+from enum import Enum
+from dataclasses import dataclass, field
+from typing import Dict, Any, Optional, List
+from datetime import datetime
+import uuid
+
+class AuditAction(Enum):
+    """审计操作类型"""
+    # 任务相关
+    TASK_CREATE = "task:create"
+    TASK_START = "task:start"
+    TASK_COMPLETE = "task:complete"
+    TASK_CANCEL = "task:cancel"
+    TASK_FAIL = "task:fail"
+
+    # 代码相关
+    CODE_READ = "code:read"
+    CODE_MODIFY = "code:modify"
+    CODE_COMMIT = "code:commit"
+
+    # 补丁相关
+    PATCH_GENERATE = "patch:generate"
+    PATCH_VIEW = "patch:view"
+    PATCH_APPROVE = "patch:approve"
+    PATCH_REJECT = "patch:reject"
+    PATCH_APPLY = "patch:apply"
+    PATCH_ROLLBACK = "patch:rollback"
+
+    # 测试相关
+    TEST_START = "test:start"
+    TEST_COMPLETE = "test:complete"
+    TEST_FAIL = "test:fail"
+
+    # 知识库相关
+    KB_CREATE = "kb:create"
+    KB_UPDATE = "kb:update"
+    KB_DELETE = "kb:delete"
+    KB_QUERY = "kb:query"
+
+    # 权限相关
+    PERMISSION_GRANT = "permission:grant"
+    PERMISSION_REVOKE = "permission:revoke"
+    LOGIN_SUCCESS = "auth:login_success"
+    LOGIN_FAIL = "auth:login_fail"
+
+    # 系统相关
+    CONFIG_CHANGE = "config:change"
+    SYSTEM_ERROR = "system:error"
+    SECURITY_ALERT = "security:alert"
+
+class AuditSeverity(Enum):
+    """审计日志严重级别"""
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+@dataclass
+class AuditContext:
+    """审计上下文信息"""
+    task_id: Optional[str] = None
+    iteration_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    session_id: Optional[str] = None
+    request_id: Optional[str] = None
+    source_ip: Optional[str] = None
+    user_agent: Optional[str] = None
+
+@dataclass
+class AuditParameter:
+    """审计参数详情"""
+    name: str
+    value: Any
+    sensitive: bool = False  # 标记是否为敏感参数
+
+@dataclass
+class AuditLog:
+    """审计日志数据模型"""
+    # 核心字段
+    log_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+    action: AuditAction
+    severity: AuditSeverity = AuditSeverity.INFO
+
+    # 执行者信息
+    actor_id: str  # 用户ID或Agent ID
+    actor_type: str  # "user" 或 "agent"
+    actor_name: Optional[str] = None
+
+    # 资源信息
+    resource_type: str  # "task", "patch", "code", "kb", "config"
+    resource_id: str
+    resource_name: Optional[str] = None
+
+    # 操作详情
+    parameters: List[AuditParameter] = field(default_factory=list)
+    result: Dict[str, Any] = field(default_factory=dict)
+    success: bool = True
+    error_message: Optional[str] = None
+
+    # 上下文信息
+    context: AuditContext = field(default_factory=AuditContext)
+
+    # 变更追踪
+    changes: Dict[str, Any] = field(default_factory=dict)  # before/after对比
+
+    # 元数据
+    version: str = "1.0"
+    schema_version: str = "1.0"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典（用于序列化）"""
+        return {
+            "log_id": self.log_id,
+            "timestamp": self.timestamp.isoformat(),
+            "action": self.action.value,
+            "severity": self.severity.value,
+            "actor": {
+                "id": self.actor_id,
+                "type": self.actor_type,
+                "name": self.actor_name
+            },
+            "resource": {
+                "type": self.resource_type,
+                "id": self.resource_id,
+                "name": self.resource_name
+            },
+            "parameters": [
+                {
+                    "name": p.name,
+                    "value": p.value if not p.sensitive else "***REDACTED***",
+                    "sensitive": p.sensitive
+                }
+                for p in self.parameters
+            ],
+            "result": self.result,
+            "success": self.success,
+            "error_message": self.error_message,
+            "context": {
+                "task_id": self.context.task_id,
+                "iteration_id": self.context.iteration_id,
+                "agent_id": self.context.agent_id,
+                "session_id": self.context.session_id,
+                "request_id": self.context.request_id,
+                "source_ip": self.context.source_ip,
+                "user_agent": self.context.user_agent
+            },
+            "changes": self.changes,
+            "version": self.version,
+            "schema_version": self.schema_version
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AuditLog":
+        """从字典创建审计日志"""
+        data["timestamp"] = datetime.fromisoformat(data["timestamp"])
+        data["context"] = AuditContext(**data.get("context", {}))
+        data["parameters"] = [
+            AuditParameter(**p) for p in data.get("parameters", [])
+        ]
+        data["action"] = AuditAction(data["action"])
+        data["severity"] = AuditSeverity(data["severity"])
+        return cls(**data)
+```
+
+#### 9.9.2 审计日志服务实现
+
+```python
+import json
+import asyncio
+from abc import ABC, abstractmethod
+from typing import AsyncGenerator
+
+class AuditStorageBackend(ABC):
+    """审计日志存储后端抽象"""
+
+    @abstractmethod
+    async def write(self, log: AuditLog) -> bool:
+        """写入单条审计日志"""
+        pass
+
+    @abstractmethod
+    async def write_batch(self, logs: List[AuditLog]) -> int:
+        """批量写入审计日志"""
+        pass
+
+    @abstractmethod
+    async def query(
+        self,
+        filters: Dict[str, Any],
+        limit: int = 100,
+        offset: int = 0,
+        sort_by: str = "timestamp",
+        sort_order: str = "desc"
+    ) -> List[AuditLog]:
+        """查询审计日志"""
+        pass
+
+    @abstractmethod
+    async def count(self, filters: Dict[str, Any]) -> int:
+        """统计符合条件的日志数量"""
+        pass
+
+    @abstractmethod
+    async def delete_old_logs(self, before: datetime) -> int:
+        """删除指定时间之前的日志"""
+        pass
+
+
+class FileAuditStorage(AuditStorageBackend):
+    """文件系统审计日志存储"""
+
+    def __init__(self, config: Dict[str, Any]):
+        self.base_path = config.get("path", "/var/log/audit")
+        self.max_file_size = config.get("max_file_size", 100 * 1024 * 1024)  # 100MB
+        self.current_file = None
+        self.file_lock = asyncio.Lock()
+
+    async def write(self, log: AuditLog) -> bool:
+        """写入单条日志到文件"""
+        async with self.file_lock:
+            try:
+                line = json.dumps(log.to_dict(), ensure_ascii=False) + "\n"
+                await self._ensure_file_open()
+                await self.current_file.write(line)
+
+                # 检查文件大小，必要时轮转
+                if self.current_file.tell() > self.max_file_size:
+                    await self._rotate_file()
+
+                return True
+            except Exception as e:
+                print(f"Failed to write audit log: {e}")
+                return False
+
+    async def write_batch(self, logs: List[AuditLog]) -> int:
+        """批量写入日志"""
+        success_count = 0
+        for log in logs:
+            if await self.write(log):
+                success_count += 1
+        return success_count
+
+    async def query(
+        self,
+        filters: Dict[str, Any],
+        limit: int = 100,
+        offset: int = 0,
+        sort_by: str = "timestamp",
+        sort_order: str = "desc"
+    ) -> List[AuditLog]:
+        """查询日志（通过grep实现）"""
+        import subprocess
+        import os
+
+        # 构建查询命令
+        cmd = ["grep", "-r", self.base_path]
+
+        if "actor_id" in filters:
+            cmd.extend(["--grep", f'"actor_id":"{filters["actor_id"]}"'])
+        if "action" in filters:
+            cmd.extend(["--grep", f'"action":"{filters["action"]}"'])
+
+        # 简化实现：返回空列表
+        return []
+
+    async def count(self, filters: Dict[str, Any]) -> int:
+        """统计日志数量"""
+        return 0
+
+    async def delete_old_logs(self, before: datetime) -> int:
+        """删除过期日志"""
+        return 0
+
+    async def _ensure_file_open(self):
+        """确保日志文件已打开"""
+        pass
+
+    async def _rotate_file(self):
+        """日志文件轮转"""
+        pass
+
+
+class DatabaseAuditStorage(AuditStorageBackend):
+    """数据库审计日志存储"""
+
+    def __init__(self, config: Dict[str, Any]):
+        self.connection_string = config.get("connection_string")
+        self.table_name = config.get("table_name", "audit_logs")
+
+    async def write(self, log: AuditLog) -> bool:
+        """写入数据库"""
+        # 使用数据库驱动实现
+        return True
+
+    async def write_batch(self, logs: List[AuditLog]) -> int:
+        """批量写入数据库"""
+        success_count = 0
+        for log in logs:
+            if await self.write(log):
+                success_count += 1
+        return success_count
+
+    async def query(
+        self,
+        filters: Dict[str, Any],
+        limit: int = 100,
+        offset: int = 0,
+        sort_by: str = "timestamp",
+        sort_order: str = "desc"
+    ) -> List[AuditLog]:
+        """从数据库查询"""
+        return []
+
+    async def count(self, filters: Dict[str, Any]) -> int:
+        """统计数量"""
+        return 0
+
+    async def delete_old_logs(self, before: datetime) -> int:
+        """删除过期日志"""
+        return 0
+
+
+class AuditLogger:
+    """审计日志服务主类"""
+
+    def __init__(self, storage: AuditStorageBackend, config: Dict[str, Any] = None):
+        self.storage = storage
+        self.config = config or {}
+        self.buffer: List[AuditLog] = []
+        self.buffer_size = self.config.get("buffer_size", 100)
+        self.flush_interval = self.config.get("flush_interval", 5)  # 秒
+        self._flush_task: Optional[asyncio.Task] = None
+
+    async def start(self):
+        """启动审计日志服务"""
+        self._flush_task = asyncio.create_task(self._periodic_flush())
+
+    async def stop(self):
+        """停止审计日志服务"""
+        if self._flush_task:
+            self._flush_task.cancel()
+            try:
+                await self._flush_task
+            except asyncio.CancelledError:
+                pass
+        # 刷新剩余日志
+        await self._flush_buffer()
+
+    async def log(
+        self,
+        action: AuditAction,
+        actor_id: str,
+        actor_type: str,
+        resource_type: str,
+        resource_id: str,
+        severity: AuditSeverity = AuditSeverity.INFO,
+        success: bool = True,
+        parameters: Optional[List[AuditParameter]] = None,
+        result: Optional[Dict[str, Any]] = None,
+        error_message: Optional[str] = None,
+        context: Optional[AuditContext] = None,
+        changes: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> AuditLog:
+        """记录审计日志"""
+        log = AuditLog(
+            action=action,
+            severity=severity,
+            actor_id=actor_id,
+            actor_type=actor_type,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            success=success,
+            parameters=parameters or [],
+            result=result or {},
+            error_message=error_message,
+            context=context or AuditContext(),
+            changes=changes or {},
+            **kwargs
+        )
+
+        self.buffer.append(log)
+
+        if len(self.buffer) >= self.buffer_size:
+            await self._flush_buffer()
+
+        return log
+
+    async def log_task_operation(
+        self,
+        task_id: str,
+        operation: str,
+        actor_id: str,
+        actor_type: str,
+        success: bool,
+        details: Optional[Dict] = None
+    ):
+        """快捷方法：记录任务操作"""
+        action_map = {
+            "create": AuditAction.TASK_CREATE,
+            "start": AuditAction.TASK_START,
+            "complete": AuditAction.TASK_COMPLETE,
+            "cancel": AuditAction.TASK_CANCEL,
+            "fail": AuditAction.TASK_FAIL,
+        }
+        action = action_map.get(operation, AuditAction.TASK_CREATE)
+
+        await self.log(
+            action=action,
+            actor_id=actor_id,
+            actor_type=actor_type,
+            resource_type="task",
+            resource_id=task_id,
+            result=details or {},
+            success=success,
+            context=AuditContext(task_id=task_id)
+        )
+
+    async def log_patch_operation(
+        self,
+        patch_id: str,
+        task_id: str,
+        operation: str,
+        actor_id: str,
+        actor_type: str,
+        success: bool,
+        changes: Optional[Dict] = None,
+        error_message: Optional[str] = None
+    ):
+        """快捷方法：记录补丁操作"""
+        action_map = {
+            "generate": AuditAction.PATCH_GENERATE,
+            "view": AuditAction.PATCH_VIEW,
+            "approve": AuditAction.PATCH_APPROVE,
+            "reject": AuditAction.PATCH_REJECT,
+            "apply": AuditAction.PATCH_APPLY,
+            "rollback": AuditAction.PATCH_ROLLBACK,
+        }
+        action = action_map.get(operation, AuditAction.PATCH_GENERATE)
+
+        # 根据操作结果设置严重级别
+        severity = AuditSeverity.INFO
+        if operation in ("approve", "apply"):
+            severity = AuditSeverity.WARNING
+        if not success:
+            severity = AuditSeverity.ERROR
+
+        await self.log(
+            action=action,
+            actor_id=actor_id,
+            actor_type=actor_type,
+            resource_type="patch",
+            resource_id=patch_id,
+            severity=severity,
+            success=success,
+            error_message=error_message,
+            changes=changes,
+            context=AuditContext(task_id=task_id)
+        )
+
+    async def log_security_event(
+        self,
+        event_type: str,
+        actor_id: str,
+        description: str,
+        details: Optional[Dict] = None
+    ):
+        """记录安全事件"""
+        await self.log(
+            action=AuditAction.SECURITY_ALERT,
+            actor_id=actor_id,
+            actor_type="system",
+            resource_type="security",
+            resource_id=event_type,
+            severity=AuditSeverity.CRITICAL,
+            success=True,
+            result={"description": description, **(details or {})}
+        )
+
+    async def _flush_buffer(self):
+        """刷新缓冲区到存储"""
+        if not self.buffer:
+            return
+
+        logs_to_flush = self.buffer.copy()
+        self.buffer.clear()
+
+        try:
+            written = await self.storage.write_batch(logs_to_flush)
+            if written < len(logs_to_flush):
+                print(f"Warning: Only {written}/{len(logs_to_flush)} audit logs written")
+        except Exception as e:
+            print(f"Failed to flush audit logs: {e}")
+            # 重新加入缓冲区
+            self.buffer.extend(logs_to_flush)
+
+    async def _periodic_flush(self):
+        """定期刷新任务"""
+        while True:
+            await asyncio.sleep(self.flush_interval)
+            await self._flush_buffer()
+```
+
+#### 9.9.3 审计日志查询接口
+
+```python
+from pydantic import BaseModel, Field
+from datetime import datetime
+from typing import Optional, List
+
+class AuditQueryRequest(BaseModel):
+    """审计日志查询请求"""
+    actor_id: Optional[str] = None
+    action: Optional[AuditAction] = None
+    resource_type: Optional[str] = None
+    resource_id: Optional[str] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    success: Optional[bool] = None
+    severity: Optional[AuditSeverity] = None
+    task_id: Optional[str] = None
+
+    # 分页
+    limit: int = Field(default=100, le=1000)
+    offset: int = Field(default=0, ge=0)
+
+    # 排序
+    sort_by: str = Field(default="timestamp")
+    sort_order: str = Field(default="desc", pattern="^(asc|desc)$")
+
+class AuditQueryResponse(BaseModel):
+    """审计日志查询响应"""
+    total: int
+    logs: List[Dict[str, Any]]
+    limit: int
+    offset: int
+
+class AuditQueryService:
+    """审计日志查询服务"""
+
+    def __init__(self, storage: AuditStorageBackend):
+        self.storage = storage
+
+    async def query(self, request: AuditQueryRequest) -> AuditQueryResponse:
+        """查询审计日志"""
+        filters = request.model_dump(exclude_none=True)
+        filters.pop("limit", None)
+        filters.pop("offset", None)
+        filters.pop("sort_by", None)
+        filters.pop("sort_order", None)
+
+        logs = await self.storage.query(
+            filters=filters,
+            limit=request.limit,
+            offset=request.offset,
+            sort_by=request.sort_by,
+            sort_order=request.sort_order
+        )
+
+        total = await self.storage.count(filters)
+
+        return AuditQueryResponse(
+            total=total,
+            logs=[log.to_dict() for log in logs],
+            limit=request.limit,
+            offset=request.offset
+        )
+
+    async def get_operation_history(
+        self,
+        resource_type: str,
+        resource_id: str
+    ) -> List[Dict[str, Any]]:
+        """获取指定资源的操作历史"""
+        response = await self.query(AuditQueryRequest(
+            resource_type=resource_type,
+            resource_id=resource_id,
+            limit=100
+        ))
+        return response.logs
+
+    async def get_user_activity(
+        self,
+        actor_id: str,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """获取用户活动记录"""
+        response = await self.query(AuditQueryRequest(
+            actor_id=actor_id,
+            start_time=start_time,
+            end_time=end_time,
+            limit=200
+        ))
+        return response.logs
+
+    async def get_security_events(
+        self,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """获取安全事件日志"""
+        response = await self.query(AuditQueryRequest(
+            action=AuditAction.SECURITY_ALERT,
+            start_time=start_time,
+            end_time=end_time,
+            limit=500
+        ))
+        return response.logs
+```
+
+#### 9.9.4 日志清理策略
+
+**日志保留与归档策略**
+
+| 日志类型 | 保留期限 | 归档位置 | 清理方式 |
+| :--- | :--- | :--- | :--- |
+| 普通操作日志 | 90天 | 冷存储/S3 | 自动删除或压缩归档 |
+| 安全审计日志 | 365天 | 冷存储/S3 | 加密后长期保留 |
+| 错误日志 | 30天 | 本地存储 | 自动清理 |
+| 调试日志 | 7天 | 临时存储 | 自动清理 |
+| 敏感操作日志 | 730天（2年） | 加密归档 | 仅允许特定角色查询 |
+
+**日志清理实现**
+
+```python
+import os
+import gzip
+from pathlib import Path
+from datetime import datetime, timedelta
+
+class LogCleanupPolicy:
+    """日志清理策略"""
+
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.policies = self._init_policies()
+
+    def _init_policies(self) -> Dict[str, Dict]:
+        """初始化清理策略"""
+        return {
+            "audit": {
+                "retention_days": 90,
+                "archive_days": 180,
+                "delete_days": 365,
+                "archive_path": "/var/log/archive/audit",
+                "compress": True,
+                "encryption": True
+            },
+            "security": {
+                "retention_days": 365,
+                "archive_days": 730,
+                "delete_days": 2555,  # 7年
+                "archive_path": "/var/log/archive/security",
+                "compress": True,
+                "encryption": True
+            },
+            "error": {
+                "retention_days": 30,
+                "archive_days": 90,
+                "delete_days": 180,
+                "archive_path": "/var/log/archive/error",
+                "compress": True,
+                "encryption": False
+            },
+            "debug": {
+                "retention_days": 7,
+                "archive_days": 14,
+                "delete_days": 30,
+                "archive_path": "/var/log/archive/debug",
+                "compress": True,
+                "encryption": False
+            }
+        }
+
+    async def run_cleanup(self, log_type: str = None) -> Dict[str, int]:
+        """执行日志清理"""
+        results = {}
+        types_to_process = [log_type] if log_type else self.policies.keys()
+
+        for log_type in types_to_process:
+            policy = self.policies.get(log_type)
+            if not policy:
+                continue
+
+            deleted = await self._cleanup_by_policy(log_type, policy)
+            archived = await self._archive_by_policy(log_type, policy)
+            results[log_type] = {"deleted": deleted, "archived": archived}
+
+        return results
+
+    async def _cleanup_by_policy(
+        self,
+        log_type: str,
+        policy: Dict
+    ) -> int:
+        """根据策略删除过期日志"""
+        delete_before = datetime.utcnow() - timedelta(days=policy["delete_days"])
+        log_path = Path(self.config.get("log_path", "/var/log")) / log_type
+
+        deleted_count = 0
+        if log_path.exists():
+            for file in log_path.glob("**/*.log*"):
+                if file.stat().st_mtime < delete_before.timestamp():
+                    file.unlink()
+                    deleted_count += 1
+
+        return deleted_count
+
+    async def _archive_by_policy(
+        self,
+        log_type: str,
+        policy: Dict
+    ) -> int:
+        """根据策略归档日志"""
+        archive_before = datetime.utcnow() - timedelta(days=policy["archive_days"])
+        retention_before = datetime.utcnow() - timedelta(days=policy["retention_days"])
+        log_path = Path(self.config.get("log_path", "/var/log")) / log_type
+        archive_path = Path(policy["archive_path"])
+
+        # 确保归档目录存在
+        archive_path.mkdir(parents=True, exist_ok=True)
+
+        archived_count = 0
+        if log_path.exists():
+            for file in log_path.glob("**/*.log"):
+                if retention_before < file.stat().st_mtime < archive_before.timestamp():
+                    await self._archive_file(file, archive_path, policy)
+                    archived_count += 1
+
+        return archived_count
+
+    async def _archive_file(
+        self,
+        file: Path,
+        archive_path: Path,
+        policy: Dict
+    ):
+        """归档单个文件"""
+        # 创建以日期为名的子目录
+        date_dir = archive_path / file.stat().st_mtime.strftime("%Y-%m")
+        date_dir.mkdir(parents=True, exist_ok=True)
+
+        # 压缩文件
+        if policy.get("compress"):
+            archived_file = date_dir / f"{file.stem}.gz"
+            with open(file, 'rb') as f_in:
+                with gzip.open(archived_file, 'wb') as f_out:
+                    f_out.write(f_in.read())
+
+        # 加密文件（如果需要）
+        if policy.get("encryption"):
+            # 调用加密工具
+            pass
+
+        # 删除原始文件
+        file.unlink()
+```
+
+---
+
+### 9.10 敏感代码与凭证管理
+
+#### 9.10.1 敏感数据识别规则
+
+```python
+from dataclasses import dataclass
+from typing import List, Pattern
+import re
+
+@dataclass
+class SensitiveDataPattern:
+    """敏感数据模式定义"""
+    name: str  # 模式名称
+    pattern: str  # 正则表达式
+    severity: str  # high, medium, low
+    description: str
+    examples: List[str]
+
+# 预定义的敏感数据模式
+SENSITIVE_PATTERNS = [
+    SensitiveDataPattern(
+        name="API Key",
+        pattern=r"(?i)(api[_-]?key|apikey|api_secret)[\s=:\"']+([a-zA-Z0-9_\-]{20,})",
+        severity="high",
+        description="API密钥泄露",
+        examples=["api_key=abc123xyz456", 'apikey: "sk-xxxxx"']
+    ),
+    SensitiveDataPattern(
+        name="AWS Access Key",
+        pattern=r"(?i)AKIA[0-9A-Z]{16}",
+        severity="high",
+        description="AWS访问密钥泄露",
+        examples=["AKIAIOSFODNN7EXAMPLE"]
+    ),
+    SensitiveDataPattern(
+        name="AWS Secret Key",
+        pattern=r"(?i)aws[_-]?secret[_-]?access[_-]?key[\s=:\"']+[a-zA-Z0-9/+=]{40}",
+        severity="high",
+        description="AWS密钥泄露",
+        examples=["wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"]
+    ),
+    SensitiveDataPattern(
+        name="Generic Secret",
+        pattern=r"(?i)(secret|password|passwd|pwd|token|auth)[\s]*[:=][\s]*[\"'][^\"']+[\"']",
+        severity="medium",
+        description="通用密码或令牌",
+        examples=['password="mypassword"', "token=abc123"]
+    ),
+    SensitiveDataPattern(
+        name="Private Key",
+        pattern=r"-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
+        severity="critical",
+        description="私钥泄露",
+        examples=["-----BEGIN RSA PRIVATE KEY-----"]
+    ),
+    SensitiveDataPattern(
+        name="JWT Token",
+        pattern=r"(?i)eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*",
+        severity="high",
+        description="JWT令牌泄露",
+        examples=["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."]
+    ),
+    SensitiveDataPattern(
+        name="Database Connection String",
+        pattern=r"(?i)(mongodb|postgres|mysql|postgresql)://[^\s\"']+",
+        severity="high",
+        description="数据库连接字符串泄露",
+        examples=["mongodb://user:pass@host:27017/db"]
+    ),
+    SensitiveDataPattern(
+        name="Hardcoded IP",
+        pattern=r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b",
+        severity="low",
+        description="硬编码IP地址",
+        examples=["192.168.1.100"]
+    ),
+    SensitiveDataPattern(
+        name="Credit Card",
+        pattern=r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14})\b",
+        severity="critical",
+        description="信用卡号泄露",
+        examples=["4111111111111111"]
+    ),
+    SensitiveDataPattern(
+        name="Social Security Number (US)",
+        pattern=r"\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b",
+        severity="critical",
+        description="社会安全号码泄露",
+        examples=["123-45-6789"]
+    )
+]
+
+class SensitiveDataDetector:
+    """敏感数据检测器"""
+
+    def __init__(self, custom_patterns: List[SensitiveDataPattern] = None):
+        self.patterns = SENSITIVE_PATTERNS + (custom_patterns or [])
+        self._compile_patterns()
+
+    def _compile_patterns(self):
+        """编译正则表达式"""
+        self.compiled_patterns = []
+        for sp in self.patterns:
+            try:
+                regex = re.compile(sp.pattern)
+                self.compiled_patterns.append((sp, regex))
+            except re.error as e:
+                print(f"Warning: Invalid pattern {sp.name}: {e}")
+
+    def scan_content(self, content: str) -> List[Dict]:
+        """扫描内容中的敏感数据"""
+        findings = []
+        for sp, regex in self.compiled_patterns:
+            for match in regex.finditer(content):
+                findings.append({
+                    "pattern_name": sp.name,
+                    "severity": sp.severity,
+                    "description": sp.description,
+                    "match": match.group(),
+                    "start": match.start(),
+                    "end": match.end()
+                })
+        return findings
+
+    def scan_file(self, file_path: str) -> List[Dict]:
+        """扫描文件中的敏感数据"""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+            return self.scan_content(content)
+        except Exception as e:
+            print(f"Error scanning file {file_path}: {e}")
+            return []
+
+    def scan_patch(self, patch_content: str) -> Dict:
+        """扫描补丁中的敏感数据"""
+        findings = self.scan_content(patch_content)
+
+        if findings:
+            # 根据严重级别汇总
+            summary = {
+                "total_findings": len(findings),
+                "critical": len([f for f in findings if f["severity"] == "critical"]),
+                "high": len([f for f in findings if f["severity"] == "high"]),
+                "medium": len([f for f in findings if f["severity"] == "medium"]),
+                "low": len([f for f in findings if f["severity"] == "low"]),
+                "findings": findings
+            }
+            return summary
+
+        return {
+            "total_findings": 0,
+            "critical": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "findings": []
+        }
+```
+
+#### 9.10.2 存储加密方案
+
+```python
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from dataclasses import dataclass
+from typing import Optional
+import base64
+import os
+
+@dataclass
+class EncryptionConfig:
+    """加密配置"""
+    algorithm: str = "AES-256-GCM"
+    key Derivation: str = "PBKDF2"
+    iterations: int = 100000
+    salt_length: int = 32
+    nonce_length: int = 12
+    master_key_path: Optional[str] = None
+
+class KeyManagementService:
+    """密钥管理服务"""
+
+    def __init__(self, config: EncryptionConfig):
+        self.config = config
+        self.master_key = None
+        self.fernet = None
+
+    def initialize(self):
+        """初始化密钥服务"""
+        self.master_key = self._load_or_generate_master_key()
+        self.fernet = Fernet(self.master_key)
+
+    def _load_or_generate_master_key(self) -> bytes:
+        """加载或生成主密钥"""
+        if self.config.master_key_path:
+            try:
+                with open(self.config.master_key_path, 'rb') as f:
+                    return f.read()
+            except FileNotFoundError:
+                pass
+
+        # 生成新的主密钥
+        key = Fernet.generate_key()
+        if self.config.master_key_path:
+            os.makedirs(
+                os.path.dirname(self.config.master_key_path),
+                exist_ok=True
+            )
+            with open(self.config.master_key_path, 'wb') as f:
+                f.write(key)
+            os.chmod(self.config.master_key_path, 0o600)
+        return key
+
+    def derive_key(self, salt: bytes, purpose: str) -> bytes:
+        """派生特定用途的密钥"""
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt + purpose.encode(),
+            iterations=self.config.iterations
+        )
+        return kdf.derive(self.master_key)
+
+    def encrypt(self, data: bytes, purpose: str = "general") -> Dict[str, bytes]:
+        """加密数据"""
+        salt = os.urandom(self.config.salt_length)
+        nonce = os.urandom(self.config.nonce_length)
+
+        # 派生密钥
+        key = self.derive_key(salt, purpose)
+
+        # 加密
+        f = Fernet(key)
+        ciphertext = f.encrypt(data)
+
+        return {
+            "salt": salt,
+            "nonce": nonce,
+            "ciphertext": ciphertext
+        }
+
+    def decrypt(self, encrypted_data: Dict[str, bytes], purpose: str = "general") -> bytes:
+        """解密数据"""
+        salt = encrypted_data["salt"]
+        ciphertext = encrypted_data["ciphertext"]
+
+        # 派生密钥
+        key = self.derive_key(salt, purpose)
+
+        # 解密
+        f = Fernet(key)
+        return f.decrypt(ciphertext)
+
+    def encrypt_string(self, text: str, purpose: str = "general") -> str:
+        """加密字符串，返回Base64编码"""
+        encrypted = self.encrypt(text.encode(), purpose)
+        return base64.b64encode(encrypted["ciphertext"]).decode()
+
+    def decrypt_string(self, encrypted_text: str, purpose: str = "general") -> str:
+        """解密Base64编码的字符串"""
+        ciphertext = base64.b64decode(encrypted_text.encode())
+        decrypted = self.decrypt({
+            "salt": os.urandom(32),  # 简化处理
+            "ciphertext": ciphertext
+        }, purpose)
+        return decrypted.decode()
+```
+
+#### 9.10.3 日志脱敏规则
+
+```python
+from typing import Any, Dict, List, Optional
+import json
+import re
+
+class LogSanitizer:
+    """日志脱敏处理器"""
+
+    # 预定义的脱敏规则
+    SANITIZATION_RULES = [
+        {
+            "name": "mask_api_key",
+            "pattern": r"(?i)(api[_-]?key|apikey)[\s]*[:=][\s]*([^\s\"']+)",
+            "replacement": r"\1: ***REDACTED***"
+        },
+        {
+            "name": "mask_password",
+            "pattern": r"(?i)(password|passwd|pwd)[\s]*[:=][\s]*([^\s\"']+)",
+            "replacement": r"\1: ***REDACTED***"
+        },
+        {
+            "name": "mask_token",
+            "pattern": r"(?i)(token|bearer|auth)[\s]*[:=][\s]*([^\s\"']+)",
+            "replacement": r"\1: ***REDACTED***"
+        },
+        {
+            "name": "mask_email",
+            "pattern": r"([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})",
+            "replacement": r"***@***.\2"
+        },
+        {
+            "name": "mask_ip",
+            "pattern": r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b",
+            "replacement": "***.***.***.***"
+        },
+        {
+            "name": "mask_credit_card",
+            "pattern": r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14})\b",
+            "replacement": "****-****-****-****"
+        },
+        {
+            "name": "mask_ssn",
+            "pattern": r"\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b",
+            "replacement": "***-**-****"
+        }
+    ]
+
+    def __init__(self, custom_rules: List[Dict] = None):
+        self.rules = self.SANITIZATION_RULES + (custom_rules or [])
+        self._compile_rules()
+
+    def _compile_rules(self):
+        """编译脱敏规则"""
+        self.compiled_rules = []
+        for rule in self.rules:
+            try:
+                regex = re.compile(rule["pattern"])
+                self.compiled_rules.append({
+                    "name": rule["name"],
+                    "regex": regex,
+                    "replacement": rule["replacement"]
+                })
+            except re.error as e:
+                print(f"Warning: Invalid sanitization rule {rule['name']}: {e}")
+
+    def sanitize_text(self, text: str) -> str:
+        """对文本进行脱敏"""
+        sanitized = text
+        for rule in self.compiled_rules:
+            sanitized = rule["regex"].sub(rule["replacement"], sanitized)
+        return sanitized
+
+    def sanitize_dict(
+        self,
+        data: Dict[str, Any],
+        sensitive_keys: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """对字典进行脱敏（递归处理嵌套结构）"""
+        if sensitive_keys is None:
+            sensitive_keys = [
+                "password", "passwd", "pwd", "secret", "token",
+                "api_key", "apikey", "access_key", "credential",
+                "private_key", "connection_string"
+            ]
+
+        def process_value(value: Any) -> Any:
+            if isinstance(value, str):
+                return self.sanitize_text(value)
+            elif isinstance(value, dict):
+                return sanitize_dict(value, sensitive_keys)
+            elif isinstance(value, list):
+                return [process_value(item) for item in value]
+            else:
+                return value
+
+        def sanitize_dict(d: Dict, keys: List[str]) -> Dict:
+            result = {}
+            for key, value in d.items():
+                key_lower = key.lower()
+                if any(sk in key_lower for sk in keys):
+                    # 敏感字段完全遮蔽
+                    if isinstance(value, str):
+                        result[key] = "***REDACTED***"
+                    elif isinstance(value, dict):
+                        result[key] = {"***REDACTED***": "***REDACTED***"}
+                    else:
+                        result[key] = value
+                else:
+                    result[key] = process_value(value)
+            return result
+
+        return sanitize_dict(data, sensitive_keys)
+
+    def sanitize_json(self, json_str: str) -> str:
+        """对JSON字符串进行脱敏"""
+        try:
+            data = json.loads(json_str)
+            sanitized = self.sanitize_dict(data)
+            return json.dumps(sanitized, ensure_ascii=False)
+        except json.JSONDecodeError:
+            # 非JSON文本，直接脱敏
+            return self.sanitize_text(json_str)
+
+    def sanitize_audit_log(self, log: Dict) -> Dict:
+        """对审计日志进行脱敏"""
+        # 敏感字段
+        sensitive_fields = ["parameters", "result", "changes"]
+        for field in sensitive_fields:
+            if field in log and isinstance(log[field], (dict, list)):
+                log[field] = self.sanitize_dict(log[field])
+        return log
+```
+
+---
+
+### 9.11 系统可观测性
+
+#### 9.11.1 结构化日志格式
+
+```python
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional, List
+from datetime import datetime
+from enum import Enum
+import json
+import logging
+
+class LogLevel(Enum):
+    """日志级别"""
+    DEBUG = 10
+    INFO = 20
+    WARNING = 30
+    ERROR = 40
+    CRITICAL = 50
+
+@dataclass
+class StructuredLog:
+    """结构化日志数据模型"""
+
+    # 核心字段
+    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    level: str = LogLevel.INFO.name
+    message: str
+
+    # 任务上下文
+    task_id: Optional[str] = None
+    iteration_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    step: Optional[str] = None
+
+    # 执行上下文
+    operation: Optional[str] = None
+    duration_ms: Optional[float] = None
+
+    # 资源标识
+    resource_type: Optional[str] = None
+    resource_id: Optional[str] = None
+
+    # 详细数据
+    details: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # 追踪信息
+    trace_id: Optional[str] = None
+    span_id: Optional[str] = None
+    parent_span_id: Optional[str] = None
+
+    # 错误信息
+    error: Optional[Dict] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            "timestamp": self.timestamp,
+            "level": self.level,
+            "message": self.message,
+            "task_id": self.task_id,
+            "iteration_id": self.iteration_id,
+            "agent_id": self.agent_id,
+            "step": self.step,
+            "operation": self.operation,
+            "duration_ms": self.duration_ms,
+            "resource_type": self.resource_type,
+            "resource_id": self.resource_id,
+            "details": self.details,
+            "metadata": self.metadata,
+            "trace_id": self.trace_id,
+            "span_id": self.span_id,
+            "parent_span_id": self.parent_span_id,
+            "error": self.error
+        }
+
+    def to_json(self) -> str:
+        """转换为JSON字符串"""
+        return json.dumps(self.to_dict(), ensure_ascii=False)
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "StructuredLog":
+        """从字典创建"""
+        return cls(**data)
+
+
+class StructuredLogger:
+    """结构化日志记录器"""
+
+    def __init__(
+        self,
+        name: str,
+        log_dir: str = "/var/log",
+        console_output: bool = True,
+        json_format: bool = True
+    ):
+        self.name = name
+        self.log_dir = log_dir
+        self.json_format = json_format
+        self.task_context: Dict[str, str] = {}
+
+        # 设置标准Python日志
+        self.logger = logging.getLogger(name)
+        self.logger.setLevel(logging.DEBUG)
+
+        # 控制台处理器
+        if console_output:
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(logging.DEBUG)
+            self.logger.addHandler(console_handler)
+
+        # 文件处理器
+        os.makedirs(log_dir, exist_ok=True)
+        file_handler = logging.FileHandler(
+            f"{log_dir}/{name}.log",
+            encoding="utf-8"
+        )
+        file_handler.setLevel(logging.DEBUG)
+        self.logger.addHandler(file_handler)
+
+    def set_task_context(self, task_id: str, iteration_id: str = None):
+        """设置任务上下文"""
+        self.task_context = {
+            "task_id": task_id,
+            "iteration_id": iteration_id
+        }
+
+    def clear_task_context(self):
+        """清除任务上下文"""
+        self.task_context = {}
+
+    def _create_log(
+        self,
+        level: LogLevel,
+        message: str,
+        operation: str = None,
+        step: str = None,
+        resource_type: str = None,
+        resource_id: str = None,
+        details: Dict = None,
+        error: Dict = None,
+        **kwargs
+    ) -> StructuredLog:
+        """创建结构化日志"""
+        return StructuredLog(
+            level=level.name,
+            message=message,
+            task_id=self.task_context.get("task_id"),
+            iteration_id=self.task_context.get("iteration_id"),
+            operation=operation,
+            step=step,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            details=details or {},
+            error=error,
+            **kwargs
+        )
+
+    def debug(
+        self,
+        message: str,
+        operation: str = None,
+        step: str = None,
+        details: Dict = None,
+        **kwargs
+    ):
+        """记录DEBUG日志"""
+        log = self._create_log(LogLevel.DEBUG, message, operation, step, details=details, **kwargs)
+        self._emit(log)
+
+    def info(
+        self,
+        message: str,
+        operation: str = None,
+        step: str = None,
+        resource_type: str = None,
+        resource_id: str = None,
+        details: Dict = None,
+        **kwargs
+    ):
+        """记录INFO日志"""
+        log = self._create_log(
+            LogLevel.INFO, message, operation, step,
+            resource_type, resource_id, details, **kwargs
+        )
+        self._emit(log)
+
+    def warning(
+        self,
+        message: str,
+        operation: str = None,
+        step: str = None,
+        details: Dict = None,
+        **kwargs
+    ):
+        """记录WARNING日志"""
+        log = self._create_log(LogLevel.WARNING, message, operation, step, details=details, **kwargs)
+        self._emit(log)
+
+    def error(
+        self,
+        message: str,
+        operation: str = None,
+        step: str = None,
+        error: Dict = None,
+        details: Dict = None,
+        **kwargs
+    ):
+        """记录ERROR日志"""
+        log = self._create_log(
+            LogLevel.ERROR, message, operation, step,
+            error=error, details=details, **kwargs
+        )
+        self._emit(log)
+
+    def critical(
+        self,
+        message: str,
+        operation: str = None,
+        step: str = None,
+        error: Dict = None,
+        details: Dict = None,
+        **kwargs
+    ):
+        """记录CRITICAL日志"""
+        log = self._create_log(
+            LogLevel.CRITICAL, message, operation, step,
+            error=error, details=details, **kwargs
+        )
+        self._emit(log)
+
+    def _emit(self, log: StructuredLog):
+        """输出日志"""
+        if self.json_format:
+            self.logger.info(log.to_json())
+        else:
+            log_line = f"[{log.timestamp}] [{log.level}] [{log.task_id or 'N/A'}] {log.message}"
+            if log.error:
+                log_line += f" Error: {log.error}"
+            self.logger.info(log_line)
+
+    def log_operation_start(self, operation: str, details: Dict = None):
+        """记录操作开始"""
+        self.info(
+            f"Operation started: {operation}",
+            operation=operation,
+            step="start",
+            details=details
+        )
+
+    def log_operation_complete(self, operation: str, duration_ms: float, details: Dict = None):
+        """记录操作完成"""
+        self.info(
+            f"Operation completed: {operation}",
+            operation=operation,
+            step="complete",
+            duration_ms=duration_ms,
+            details=details
+        )
+
+    def log_operation_error(self, operation: str, error: Dict, details: Dict = None):
+        """记录操作错误"""
+        self.error(
+            f"Operation failed: {operation}",
+            operation=operation,
+            step="error",
+            error=error,
+            details=details
+        )
+```
+
+#### 9.11.2 性能指标收集
+
+```python
+from dataclasses import dataclass
+from typing import Dict, Any, Optional, List
+from datetime import datetime
+from enum import Enum
+import time
+import asyncio
+
+class MetricType(Enum):
+    """指标类型"""
+    COUNTER = "counter"          # 计数器
+    GAUGE = "gauge"              # 瞬时值
+    HISTOGRAM = "histogram"      # 直方图
+    SUMMARY = "summary"          # 摘要
+
+@dataclass
+class Metric:
+    """指标数据模型"""
+    name: str
+    type: MetricType
+    value: float
+    labels: Dict[str, str] = field(default_factory=dict)
+    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    description: str = ""
+
+@dataclass
+class PerformanceMetrics:
+    """性能指标收集器"""
+
+    # 系统级指标
+    cpu_usage: float = 0.0
+    memory_usage: float = 0.0
+    disk_usage: float = 0.0
+    network_io: Dict[str, float] = field(default_factory=dict)
+
+    # 应用级指标
+    request_count: int = 0
+    request_latency_ms: float = 0.0
+    error_count: int = 0
+    active_tasks: int = 0
+
+    # 业务指标
+    code_analysis_count: int = 0
+    patch_generation_count: int = 0
+    test_execution_count: int = 0
+    success_rate: float = 0.0
+
+class MetricsCollector:
+    """性能指标收集服务"""
+
+    def __init__(self, config: Dict = None):
+        self.config = config or {}
+        self.metrics: Dict[str, List[Metric]] = {}
+        self._lock = asyncio.Lock()
+
+    async def record_counter(
+        self,
+        name: str,
+        value: float = 1,
+        labels: Dict = None,
+        description: str = ""
+    ):
+        """记录计数器指标"""
+        metric = Metric(
+            name=name,
+            type=MetricType.COUNTER,
+            value=value,
+            labels=labels or {},
+            description=description
+        )
+        await self._store_metric(metric)
+
+    async def record_gauge(
+        self,
+        name: str,
+        value: float,
+        labels: Dict = None,
+        description: str = ""
+    ):
+        """记录瞬时值指标"""
+        metric = Metric(
+            name=name,
+            type=MetricType.GAUGE,
+            value=value,
+            labels=labels or {},
+            description=description
+        )
+        await self._store_metric(metric)
+
+    async def record_histogram(
+        self,
+        name: str,
+        value: float,
+        labels: Dict = None,
+        description: str = ""
+    ):
+        """记录直方图指标"""
+        metric = Metric(
+            name=name,
+            type=MetricType.HISTOGRAM,
+            value=value,
+            labels=labels or {},
+            description=description
+        )
+        await self._store_metric(metric)
+
+    async def _store_metric(self, metric: Metric):
+        """存储指标"""
+        async with self._lock:
+            if metric.name not in self.metrics:
+                self.metrics[metric.name] = []
+            self.metrics[metric.name].append(metric)
+
+            # 限制内存中的指标数量
+            max_entries = self.config.get("max_entries_per_metric", 1000)
+            if len(self.metrics[metric.name]) > max_entries:
+                self.metrics[metric.name] = self.metrics[metric.name][-max_entries:]
+
+    def get_metrics(self, name: str = None) -> Dict[str, List[Metric]]:
+        """获取指标"""
+        if name:
+            return {name: self.metrics.get(name, [])}
+        return self.metrics
+
+    def get_summary(self, name: str) -> Dict[str, Any]:
+        """获取指标汇总"""
+        metrics = self.metrics.get(name, [])
+        if not metrics:
+            return {}
+
+        values = [m.value for m in metrics]
+
+        return {
+            "name": name,
+            "count": len(values),
+            "sum": sum(values),
+            "avg": sum(values) / len(values),
+            "min": min(values),
+            "max": max(values),
+            "last": values[-1] if values else None
+        }
+
+    async def record_task_duration(
+        self,
+        task_id: str,
+        duration_ms: float,
+        task_type: str,
+        success: bool
+    ):
+        """记录任务执行时长"""
+        await self.record_histogram(
+            name="task_duration_ms",
+            value=duration_ms,
+            labels={
+                "task_type": task_type,
+                "success": str(success)
+            },
+            description="Task execution duration in milliseconds"
+        )
+
+        await self.record_counter(
+            name="task_total",
+            value=1,
+            labels={
+                "task_type": task_type,
+                "success": str(success)
+            }
+        )
+
+    async def record_llm_call(
+        self,
+        model: str,
+        duration_ms: float,
+        tokens: int,
+        success: bool
+    ):
+        """记录LLM调用指标"""
+        await self.record_histogram(
+            name="llm_duration_ms",
+            value=duration_ms,
+            labels={"model": model, "success": str(success)},
+            description="LLM API call duration"
+        )
+
+        await self.record_histogram(
+            name="llm_tokens",
+            value=tokens,
+            labels={"model": model},
+            description="Number of tokens in LLM call"
+        )
+
+
+class TimedContext:
+    """计时上下文管理器"""
+
+    def __init__(
+        self,
+        collector: MetricsCollector,
+        metric_name: str,
+        labels: Dict = None
+    ):
+        self.collector = collector
+        self.metric_name = metric_name
+        self.labels = labels or {}
+        self.start_time = None
+
+    async def __aenter__(self):
+        self.start_time = time.perf_counter()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        duration_ms = (time.perf_counter() - self.start_time) * 1000
+        await self.collector.record_histogram(
+            name=self.metric_name,
+            value=duration_ms,
+            labels=self.labels
+        )
+```
+
+#### 9.11.3 分布式链路追踪
+
+```python
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Any, List
+from datetime import datetime
+import uuid
+
+@dataclass
+class TraceContext:
+    """追踪上下文"""
+    trace_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    span_id: str = field(default_factory=lambda: str(uuid.uuid4())[:16])
+    parent_span_id: Optional[str] = None
+    baggage: Dict[str, str] = field(default_factory=dict)
+
+    def create_child(self) -> "TraceContext":
+        """创建子span上下文"""
+        return TraceContext(
+            trace_id=self.trace_id,
+            parent_span_id=self.span_id,
+            baggage=self.baggage.copy()
+        )
+
+@dataclass
+class Span:
+    """追踪跨度"""
+    name: str
+    trace_id: str
+    span_id: str
+    parent_span_id: Optional[str]
+    start_time: str
+    end_time: Optional[str] = None
+    duration_ms: Optional[float] = None
+    status: str = "ok"  # ok, error
+    attributes: Dict[str, Any] = field(default_factory=dict)
+    events: List[Dict] = field(default_factory=list)
+    links: List[Dict] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict:
+        return {
+            "name": self.name,
+            "trace_id": self.trace_id,
+            "span_id": self.span_id,
+            "parent_span_id": self.parent_span_id,
+            "start_time": self.start_time,
+            "end_time": self.end_time,
+            "duration_ms": self.duration_ms,
+            "status": self.status,
+            "attributes": self.attributes,
+            "events": self.events,
+            "links": self.links
+        }
+
+
+class DistributedTracer:
+    """分布式链路追踪器"""
+
+    def __init__(self, service_name: str, config: Dict = None):
+        self.service_name = service_name
+        self.config = config or {}
+        self.current_context: Optional[TraceContext] = None
+        self.spans: List[Span] = []
+
+    def start_trace(self, baggage: Dict = None) -> TraceContext:
+        """开始新的追踪"""
+        self.current_context = TraceContext(baggage=baggage or {})
+        return self.current_context
+
+    def start_span(
+        self,
+        name: str,
+        attributes: Dict = None
+    ) -> Span:
+        """开始新的span"""
+        if not self.current_context:
+            self.start_trace()
+
+        span = Span(
+            name=name,
+            trace_id=self.current_context.trace_id,
+            span_id=self.current_context.span_id,
+            parent_span_id=self.current_context.parent_span_id,
+            start_time=datetime.utcnow().isoformat(),
+            attributes=attributes or {}
+        )
+
+        self.spans.append(span)
+
+        # 更新当前上下文
+        self.current_context = self.current_context.create_child()
+
+        return span
+
+    def end_span(self, span: Span, status: str = "ok"):
+        """结束span"""
+        span.end_time = datetime.utcnow().isoformat()
+        span.status = status
+
+        # 计算持续时间
+        from datetime import datetime as dt
+        start = dt.fromisoformat(span.start_time)
+        end = dt.fromisoformat(span.end_time)
+        span.duration_ms = (end - start).total_seconds() * 1000
+
+    def add_span_event(
+        self,
+        span: Span,
+        name: str,
+        attributes: Dict = None
+    ):
+        """向span添加事件"""
+        span.events.append({
+            "name": name,
+            "timestamp": datetime.utcnow().isoformat(),
+            "attributes": attributes or {}
+        })
+
+    def inject_context(self) -> Dict[str, str]:
+        """注入追踪上下文到传输格式"""
+        if not self.current_context:
+            return {}
+
+        return {
+            "trace_id": self.current_context.trace_id,
+            "span_id": self.current_context.span_id,
+            "parent_span_id": self.current_context.parent_span_id or "",
+            "baggage": ",".join(f"{k}={v}" for k, v in self.current_context.baggage.items())
+        }
+
+    def extract_context(self, headers: Dict[str, str]) -> TraceContext:
+        """从传输格式提取追踪上下文"""
+        trace_id = headers.get("X-Trace-ID", str(uuid.uuid4()))
+        span_id = headers.get("X-Span-ID", str(uuid.uuid4())[:16])
+        parent_span_id = headers.get("X-Parent-Span-ID") or None
+
+        baggage = {}
+        baggage_header = headers.get("X-Baggage")
+        if baggage_header:
+            for item in baggage_header.split(","):
+                if "=" in item:
+                    k, v = item.split("=", 1)
+                    baggage[k] = v
+
+        self.current_context = TraceContext(
+            trace_id=trace_id,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
+            baggage=baggage
+        )
+
+        return self.current_context
+
+    def get_trace_tree(self) -> Dict:
+        """获取追踪树结构"""
+        span_dict = {s.span_id: s.to_dict() for s in self.spans}
+
+        # 构建树结构
+        roots = []
+        for span in self.spans:
+            span_data = span_dict[span.span_id]
+            if not span.parent_span_id:
+                roots.append(span_data)
+            else:
+                parent = span_dict.get(span.parent_span_id)
+                if parent:
+                    if "children" not in parent:
+                        parent["children"] = []
+                    parent["children"].append(span_data)
+
+        return {
+            "trace_id": self.spans[0].trace_id if self.spans else None,
+            "spans_count": len(self.spans),
+            "roots": roots
+        }
+```
+
+---
+
+### 9.12 错误隔离与恢复安全
+
+#### 9.12.1 错误分类
+
+```python
+from enum import Enum
+from dataclasses import dataclass
+from typing import Dict, Any, Optional
+from datetime import datetime
+
+class ErrorCategory(Enum):
+    """错误类别"""
+    SYSTEM_ERROR = "system_error"           # 系统内部错误
+    USER_ERROR = "user_error"               # 用户输入错误
+    VALIDATION_ERROR = "validation_error"   # 验证失败
+    EXTERNAL_DEPENDENCY_ERROR = "external"  # 外部依赖错误
+    RESOURCE_ERROR = "resource_error"       # 资源不足错误
+    TIMEOUT_ERROR = "timeout_error"         # 超时错误
+    SECURITY_ERROR = "security_error"       # 安全相关错误
+    UNKNOWN_ERROR = "unknown_error"         # 未知错误
+
+class ErrorSeverity(Enum):
+    """错误严重级别"""
+    FATAL = "fatal"       # 导致系统不可用
+    HIGH = "high"         # 主要功能受影响
+    MEDIUM = "medium"     # 次要功能受影响
+    LOW = "low"           # 轻微影响，可忽略
+
+@dataclass
+class SystemError:
+    """系统错误数据模型"""
+    category: ErrorCategory
+    severity: ErrorSeverity
+    error_code: str
+    message: str
+    details: Dict[str, Any]
+    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    request_id: Optional[str] = None
+    task_id: Optional[str] = None
+    stack_trace: Optional[str] = None
+    recovery_action: Optional[str] = None
+
+    def to_dict(self) -> Dict:
+        return {
+            "category": self.category.value,
+            "severity": self.severity.value,
+            "error_code": self.error_code,
+            "message": self.message,
+            "details": self.details,
+            "timestamp": self.timestamp,
+            "request_id": self.request_id,
+            "task_id": self.task_id,
+            "stack_trace": self.stack_trace,
+            "recovery_action": self.recovery_action
+        }
+
+
+class ErrorClassifier:
+    """错误分类器"""
+
+    # 错误代码映射
+    ERROR_CODE_MAP = {
+        # 系统1错误 (xxx)
+        "1001": (ErrorCategory.SYSTEM_ERROR, ErrorSeverity.HIGH, "Null pointer exception"),
+        "1002": (ErrorCategory.SYSTEM_ERROR, ErrorSeverity.HIGH, "Index out of bounds"),
+        "1003": (ErrorCategory.SYSTEM_ERROR, ErrorSeverity.FATAL, "Out of memory"),
+        "1004": (ErrorCategory.SYSTEM_ERROR, ErrorSeverity.HIGH, "Database connection failed"),
+
+        # 用户错误 (2xxx)
+        "2001": (ErrorCategory.USER_ERROR, ErrorSeverity.LOW, "Invalid input format"),
+        "2002": (ErrorCategory.USER_ERROR, ErrorSeverity.MEDIUM, "Required field missing"),
+        "2003": (ErrorCategory.USER_ERROR, ErrorSeverity.LOW, "Duplicate entry"),
+
+        # 验证错误 (3xxx)
+        "3001": (ErrorCategory.VALIDATION_ERROR, ErrorSeverity.MEDIUM, "Schema validation failed"),
+        "3002": (ErrorCategory.VALIDATION_ERROR, ErrorSeverity.HIGH, "Signature verification failed"),
+
+        # 外部依赖错误 (4xxx)
+        "4001": (ErrorCategory.EXTERNAL_DEPENDENCY_ERROR, ErrorSeverity.MEDIUM, "LLM API timeout"),
+        "4002": (ErrorCategory.EXTERNAL_DEPENDENCY_ERROR, ErrorSeverity.HIGH, "LLM API rate limit"),
+        "4003": (ErrorCategory.EXTERNAL_DEPENDENCY_ERROR, ErrorSeverity.HIGH, "Git repository access failed"),
+        "4004": (ErrorCategory.EXTERNAL_DEPENDENCY_ERROR, ErrorSeverity.MEDIUM, "Build tool not found"),
+
+        # 资源错误 (5xxx)
+        "5001": (ErrorCategory.RESOURCE_ERROR, ErrorSeverity.HIGH, "Insufficient disk space"),
+        "5002": (ErrorCategory.RESOURCE_ERROR, ErrorSeverity.MEDIUM, "Memory limit exceeded"),
+        "5003": (ErrorCategory.RESOURCE_ERROR, ErrorSeverity.HIGH, "Network bandwidth exceeded"),
+
+        # 超时错误 (6xxx)
+        "6001": (ErrorCategory.TIMEOUT_ERROR, ErrorSeverity.MEDIUM, "Task execution timeout"),
+        "6002": (ErrorCategory.TIMEOUT_ERROR, ErrorSeverity.LOW, "Query timeout"),
+
+        # 安全错误 (7xxx)
+        "7001": (ErrorCategory.SECURITY_ERROR, ErrorSeverity.FATAL, "Authentication failed"),
+        "7002": (ErrorCategory.SECURITY_ERROR, ErrorSeverity.HIGH, "Authorization denied"),
+        "7003": (ErrorCategory.SECURITY_ERROR, ErrorSeverity.CRITICAL, "Potential security threat detected"),
+    }
+
+    def classify(
+        self,
+        exception: Exception,
+        error_code: str = None,
+        context: Dict = None
+    ) -> SystemError:
+        """分类错误"""
+        # 确定错误代码
+        code = error_code or self._extract_error_code(exception)
+
+        # 确定类别和严重级别
+        if code in self.ERROR_CODE_MAP:
+            category, severity, base_message = self.ERROR_CODE_MAP[code]
+        else:
+            category = ErrorCategory.UNKNOWN_ERROR
+            severity = ErrorSeverity.MEDIUM
+            base_message = str(exception)
+
+        return SystemError(
+            category=category,
+            severity=severity,
+            error_code=code,
+            message=base_message,
+            details={
+                "exception_type": type(exception).__name__,
+                "exception_message": str(exception),
+                **(context or {})
+            },
+            stack_trace=self._extract_stack_trace(exception)
+        )
+
+    def _extract_error_code(self, exception: Exception) -> str:
+        """从异常中提取错误代码"""
+        if hasattr(exception, "error_code"):
+            return exception.error_code
+        return "0000"  # 未知错误代码
+
+    def _extract_stack_trace(self, exception: Exception) -> str:
+        """提取堆栈跟踪"""
+        import traceback
+        return "".join(traceback.format_exception(type(exception), exception, exception.__traceback__))
+```
+
+#### 9.12.2 错误隔离机制
+
+```python
+from abc import ABC, abstractmethod
+from typing import Callable, Any, TypeVar, Dict
+import asyncio
+import contextlib
+
+T = TypeVar("T")
+
+class ErrorBoundary:
+    """错误边界容器"""
+
+    def __init__(self, config: Dict = None):
+        self.config = config or {}
+        self.error_handlers: Dict[str, Callable] = {}
+        self.fallback_handlers: Dict[str, Callable] = {}
+
+    def register_error_handler(
+        self,
+        error_type: type,
+        handler: Callable[[Exception], Any]
+    ):
+        """注册错误处理器"""
+        self.error_handlers[error_type.__name__] = handler
+
+    def register_fallback(
+        self,
+        operation_name: str,
+        fallback: Callable[..., Any]
+    ):
+        """注册降级处理器"""
+        self.fallback_handlers[operation_name] = fallback
+
+    @contextlib.asynccontextmanager
+    async def capture(
+        self,
+        operation_name: str,
+        reraise: bool = True,
+        context: Dict = None
+    ):
+        """捕获错误的上下文管理器"""
+        try:
+            yield
+        except Exception as e:
+            # 记录错误
+            await self._handle_error(e, operation_name, context)
+
+            # 调用错误处理器
+            handler_name = type(e).__name__
+            if handler_name in self.error_handlers:
+                await self.error_handlers[handler_name](e)
+
+            # 调用降级处理器
+            if operation_name in self.fallback_handlers:
+                await self.fallback_handlers[operation_name](e)
+
+            if reraise:
+                raise
+
+    async def capture_sync(
+        self,
+        operation_name: str,
+        func: Callable[..., T],
+        *args,
+        **kwargs
+    ) -> T:
+        """同步函数错误捕获包装器"""
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            await self._handle_error(e, operation_name, {})
+            if operation_name in self.fallback_handlers:
+                return self.fallback_handlers[operation_name](e)
+            raise
+
+    async def _handle_error(
+        self,
+        error: Exception,
+        operation_name: str,
+        context: Dict
+    ):
+        """处理错误"""
+        # 记录到监控系统
+        print(f"Error in {operation_name}: {error}")
+
+    def circuit_breaker(
+        self,
+        failure_threshold: int = 5,
+        recovery_timeout: int = 60
+    ):
+        """熔断器装饰器"""
+        def decorator(func: Callable):
+            state = {"failures": 0, "last_failure": None, "state": "closed"}
+
+            async def wrapper(*args, **kwargs):
+                if state["state"] == "open":
+                    # 检查是否超时
+                    if state["last_failure"] and \
+                       (datetime.utcnow() - state["last_failure"]).seconds > recovery_timeout:
+                        state["state"] = "half_open"
+                    else:
+                        raise CircuitOpenError(
+                            f"Circuit breaker is open for {func.__name__}"
+                        )
+
+                try:
+                    result = await func(*args, **kwargs)
+                    state["failures"] = 0
+                    state["state"] = "closed"
+                    return result
+                except Exception as e:
+                    state["failures"] += 1
+                    state["last_failure"] = datetime.utcnow()
+
+                    if state["failures"] >= failure_threshold:
+                        state["state"] = "open"
+
+                    raise
+
+            return wrapper
+        return decorator
+
+
+class CircuitOpenError(Exception):
+    """熔断器开启错误"""
+    pass
+
+
+class IsolationManager:
+    """错误隔离管理器"""
+
+    def __init__(self, config: Dict = None):
+        self.config = config or {}
+        self.resource_limits = self._init_resource_limits()
+        self.isolation_groups: Dict[str, set] = {}
+
+    def _init_resource_limits(self) -> Dict:
+        """初始化资源限制"""
+        return {
+            "max_concurrent_tasks": self.config.get("max_concurrent_tasks", 100),
+            "max_memory_per_task_mb": self.config.get("max_memory_per_task_mb", 1024),
+            "max_execution_time_seconds": self.config.get("max_execution_time", 3600),
+            "max_file_descriptors": self.config.get("max_file_descriptors", 1024),
+        }
+
+    async def validate_resource_usage(self, task_id: str) -> bool:
+        """验证资源使用是否在限制内"""
+        current_usage = await self._get_current_usage()
+
+        return (
+            current_usage["active_tasks"] < self.resource_limits["max_concurrent_tasks"]
+            and current_usage["memory_mb"] < self.resource_limits["max_memory_per_task_mb"]
+        )
+
+    async def _get_current_usage(self) -> Dict:
+        """获取当前资源使用情况"""
+        import psutil
+        process = psutil.Process()
+        return {
+            "active_tasks": 0,  # 从任务管理器获取
+            "memory_mb": process.memory_info().rss / (1024 * 1024),
+            "cpu_percent": process.cpu_percent()
+        }
+
+    def create_isolation_group(self, group_id: str, members: set):
+        """创建隔离组"""
+        self.isolation_groups[group_id] = members
+
+    async def execute_in_isolation(
+        self,
+        group_id: str,
+        operation: Callable,
+        *args,
+        **kwargs
+    ) -> Any:
+        """在隔离环境中执行操作"""
+        if group_id not in self.isolation_groups:
+            raise ValueError(f"Isolation group {group_id} not found")
+
+        # 设置资源限制
+        import resource
+        limits = self.resource_limits
+
+        # 设置最大文件描述符
+        resource.setrlimit(
+            resource.RLIMIT_NOFILE,
+            (limits["max_file_descriptors"], limits["max_file_descriptors"])
+        )
+
+        try:
+            return await operation(*args, **kwargs)
+        finally:
+            # 恢复默认限制
+            resource.setrlimit(resource.RLIMIT_NOFILE, (1024, 1024))
+```
+
+#### 9.12.3 恢复流程安全验证
+
+```python
+from dataclasses import dataclass, field
+from typing import Dict, Any, Optional, List
+from datetime import datetime
+from enum import Enum
+
+class RecoveryStatus(Enum):
+    """恢复状态"""
+    NOT_STARTED = "not_started"
+    IN_PROGRESS = "in_progress"
+    SUCCESS = "success"
+    FAILED = "failed"
+    ROLLBACK = "rollback"
+
+class RecoveryCheckpoint:
+    """恢复检查点"""
+
+    def __init__(self, checkpoint_id: str, data: Dict):
+        self.checkpoint_id = checkpoint_id
+        self.data = data
+        self.timestamp = datetime.utcnow().isoformat()
+        self.checksum = self._calculate_checksum()
+
+    def _calculate_checksum(self) -> str:
+        """计算数据校验和"""
+        import hashlib
+        data_str = str(self.data) + self.timestamp
+        return hashlib.sha256(data_str.encode()).hexdigest()[:16]
+
+    def verify(self) -> bool:
+        """验证检查点完整性"""
+        return self.checksum == self._calculate_checksum()
+
+
+@dataclass
+class RecoveryPlan:
+    """恢复计划"""
+    plan_id: str
+    task_id: str
+    checkpoints: List[RecoveryCheckpoint]
+    recovery_steps: List[Dict]
+    rollback_plan: Dict
+    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    status: RecoveryStatus = RecoveryStatus.NOT_STARTED
+
+
+class RecoveryValidator:
+    """恢复验证器"""
+
+    def __init__(self, config: Dict = None):
+        self.config = config or {}
+
+    async def validate_recovery(
+        self,
+        recovery_plan: RecoveryPlan,
+        current_state: Dict
+    ) -> Dict[str, Any]:
+        """验证恢复计划的有效性"""
+        validations = {
+            "checkpoint_integrity": self._validate_checkpoints(recovery_plan.checkpoints),
+            "state_compatibility": self._validate_state_compatibility(
+                recovery_plan, current_state
+            ),
+            "rollback_safety": self._validate_rollback_safety(recovery_plan),
+            "resource_availability": await self._validate_resources()
+        }
+
+        # 计算总体验证结果
+        all_passed = all(
+            v.get("passed", False) for v in validations.values()
+        )
+
+        return {
+            "valid": all_passed,
+            "validations": validations,
+            "recommendations": self._generate_recommendations(validations)
+        }
+
+    def _validate_checkpoints(
+        self,
+        checkpoints: List[RecoveryCheckpoint]
+    ) -> Dict:
+        """验证检查点完整性"""
+        results = {
+            "passed": True,
+            "details": [],
+            "issues": []
+        }
+
+        for cp in checkpoints:
+            if cp.verify():
+                results["details"].append(
+                    f"Checkpoint {cp.checkpoint_id}: valid"
+                )
+            else:
+                results["passed"] = False
+                results["issues"].append(
+                    f"Checkpoint {cp.checkpoint_id}: checksum mismatch"
+                )
+
+        if not checkpoints:
+            results["passed"] = False
+            results["issues"].append("No checkpoints available")
+
+        return results
+
+    def _validate_state_compatibility(
+        self,
+        recovery_plan: RecoveryPlan,
+        current_state: Dict
+    ) -> Dict:
+        """验证状态兼容性"""
+        results = {
+            "passed": True,
+            "details": [],
+            "issues": []
+        }
+
+        # 验证必需的检查点
+        required_fields = ["task_id", "agent_states", "configuration"]
+        for field in required_fields:
+            if field not in current_state:
+                results["passed"] = False
+                results["issues"].append(f"Missing required field: {field}")
+
+        # 验证版本兼容性
+        if recovery_plan.checkpoints:
+            latest_cp = recovery_plan.checkpoints[-1]
+            if latest_cp.data.get("version") != current_state.get("version"):
+                results["issues"].append(
+                    "Version mismatch between checkpoint and current state"
+                )
+
+        return results
+
+    def _validate_rollback_safety(
+        self,
+        recovery_plan: RecoveryPlan
+    ) -> Dict:
+        """验证回滚安全性"""
+        results = {
+            "passed": True,
+            "details": [],
+            "issues": []
+        }
+
+        # 验证回滚计划存在
+        if not recovery_plan.rollback_plan:
+            results["passed"] = False
+            results["issues"].append("Rollback plan not defined")
+            return results
+
+        # 验证回滚步骤
+        rollback_steps = recovery_plan.rollback_plan.get("steps", [])
+        if not rollback_steps:
+            results["issues"].append("No rollback steps defined")
+
+        # 验证数据一致性保证
+        if "data_consistency" not in recovery_plan.rollback_plan:
+            results["issues"].append(
+                "Rollback plan does not guarantee data consistency"
+            )
+
+        return results
+
+    async def _validate_resources(self) -> Dict:
+        """验证资源可用性"""
+        results = {
+            "passed": True,
+            "details": [],
+            "issues": []
+        }
+
+        # 检查磁盘空间
+        import shutil
+        total, used, free = shutil.disk_usage("/")
+        free_gb = free // (2**30)
+
+        if free_gb < self.config.get("min_disk_space_gb", 5):
+            results["passed"] = False
+            results["issues"].append(f"Low disk space: {free_gb}GB available")
+        else:
+            results["details"].append(f"Disk space: {free_gb}GB available")
+
+        return results
+
+    def _generate_recommendations(self, validations: Dict) -> List[str]:
+        """生成恢复建议"""
+        recommendations = []
+
+        for name, result in validations.items():
+            if not result.get("passed", False):
+                for issue in result.get("issues", []):
+                    if name == "checkpoint_integrity":
+                        recommendations.append(
+                            "建议：从最近的已知良好状态重新创建检查点"
+                        )
+                    elif name == "state_compatibility":
+                        recommendations.append(
+                            "建议：检查系统版本并执行必要的迁移步骤"
+                        )
+                    elif name == "rollback_safety":
+                        recommendations.append(
+                            "建议：手动验证数据一致性后再继续"
+                        )
+                    elif name == "resource_availability":
+                        recommendations.append(
+                            "建议：释放资源或扩展存储空间"
+                        )
+
+        return recommendations
+
+
+class RecoveryExecutor:
+    """恢复执行器"""
+
+    def __init__(
+        self,
+        validator: RecoveryValidator,
+        logger,
+        config: Dict = None
+    ):
+        self.validator = validator
+        self.logger = logger
+        self.config = config or {}
+
+    async def execute_recovery(
+        self,
+        recovery_plan: RecoveryPlan,
+        current_state: Dict
+    ) -> Dict:
+        """执行恢复流程"""
+        # 验证恢复计划
+        validation_result = await self.validator.validate_recovery(
+            recovery_plan, current_state
+        )
+
+        if not validation_result["valid"]:
+            return {
+                "status": RecoveryStatus.FAILED,
+                "reason": "Recovery plan validation failed",
+                "validations": validation_result
+            }
+
+        # 执行恢复步骤
+        for step in recovery_plan.recovery_steps:
+            try:
+                await self._execute_step(step)
+            except Exception as e:
+                self.logger.error(f"Recovery step failed: {step}", error={"error": str(e)})
+                # 触发回滚
+                return await self._execute_rollback(recovery_plan.rollback_plan)
+
+        return {
+            "status": RecoveryStatus.SUCCESS,
+            "checkpoints_restored": len(recovery_plan.checkpoints),
+            "validations": validation_result
+        }
+
+    async def _execute_step(self, step: Dict):
+        """执行单个恢复步骤"""
+        step_type = step.get("type")
+        params = step.get("params", {})
+
+        if step_type == "restore_snapshot":
+            await self._restore_snapshot(params)
+        elif step_type == "restore_database":
+            await self._restore_database(params)
+        elif step_type == "reinitialize_agent":
+            await self._reinitialize_agent(params)
+
+    async def _restore_snapshot(self, params: Dict):
+        """恢复快照"""
+        snapshot_id = params.get("snapshot_id")
+        # 实现快照恢复逻辑
+        pass
+
+    async def _restore_database(self, params: Dict):
+        """恢复数据库"""
+        backup_path = params.get("backup_path")
+        # 实现数据库恢复逻辑
+        pass
+
+    async def _reinitialize_agent(self, params: Dict):
+        """重新初始化Agent"""
+        agent_id = params.get("agent_id")
+        # 实现Agent重初始化逻辑
+        pass
+
+    async def _execute_rollback(self, rollback_plan: Dict) -> Dict:
+        """执行回滚"""
+        self.logger.warning("Executing rollback plan")
+        # 实现回滚逻辑
+        return {
+            "status": RecoveryStatus.ROLLBACK,
+            "rollback_plan": rollback_plan
+        }
+```
+
+---
+
 ## 1. 核心模块详细设计
 
 ### 1.1 CodeAnalyzer（代码分析器）
