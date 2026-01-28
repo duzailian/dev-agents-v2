@@ -20,7 +20,7 @@
 - 5. 数据模型
 - 6. API规范
 - 7. 配置与策略
-- 8. 集成设计（含Webhook，后续阶段）
+- 8. 集成服务设计 (Layer 4)
 - 9. 运行约束与治理（并发、权限、限流、记忆、日志）
 
 ## 0. Phase 2 MVP 边界说明
@@ -3924,143 +3924,421 @@ class StartupStrategy:
 
 ---
 
-## 8. 集成设计
+## 8. 集成服务设计 (Layer 4 Service Layer)
 
-### 8.1 Redmine集成
+本章节详细定义系统与外部第三方服务的集成方案，涵盖 Redmine、GitLab、大模型 API 以及通用服务治理策略，确保系统在复杂外部依赖下的稳定性与一致性。
+
+### 8.1 Redmine 集成模块
+
+Redmine 集成模块负责将系统的测试任务、缺陷分析与外部工单系统同步，实现测试过程的可追溯性。
+
+#### 8.1.1 REST API 调用规范
+
+系统统一采用 Redmine REST API v3 进行交互，所有请求需带上 `X-Redmine-API-Key`。
+
+**核心接口定义与数据模型**：
 
 ```python
-import requests
 from typing import Dict, Any, List, Optional
+import httpx
+from pydantic import BaseModel, Field
+from datetime import datetime
 
-class RedmineIntegration:
-    """Redmine集成服务"""
+class RedmineCustomField(BaseModel):
+    id: int
+    value: Any
+
+class RedmineIssue(BaseModel):
+    id: Optional[int]
+    subject: str = Field(..., description="工单标题")
+    description: str = Field(..., description="工单详细描述")
+    project_id: int = Field(..., description="项目ID")
+    status_id: int = Field(default=1, description="状态ID")
+    priority_id: int = Field(default=2, description="优先级ID")
+    tracker_id: int = Field(default=1, description="跟踪器ID")
+    assigned_to_id: Optional[int] = None
+    category_id: Optional[int] = None
+    fixed_version_id: Optional[int] = None
+    custom_fields: List[RedmineCustomField] = []
+    parent_issue_id: Optional[int] = None
+
+class RedmineJournal(BaseModel):
+    notes: str
+    private_notes: bool = False
+
+class RedmineClient:
+    """Redmine API 封装客户端 - 增强版"""
     
-    def __init__(self, config: Dict[str, Any]):
-        self.base_url = config['redmine_url']
-        self.api_key = config['redmine_key']
-        self.project_id = config['redmine_project_id']
+    def __init__(self, base_url: str, api_key: str):
+        self.base_url = base_url.rstrip('/')
         self.headers = {
-            'X-Redmine-API-Key': self.api_key,
-            'Content-Type': 'application/json'
+            "X-Redmine-API-Key": api_key,
+            "Content-Type": "application/json"
         }
-        
-    async def create_issue(self, 
-                          title: str,
-                          description: str,
-                          issue_type: str = "bug",
-                          priority: str = "normal",
-                          assignee_id: Optional[int] = None) -> Dict[str, Any]:
-        """创建Redmine工单"""
-        
-        issue_data = {
-            'issue': {
-                'project_id': self.project_id,
-                'subject': title,
-                'description': description,
-                'tracker_id': await self._get_tracker_id(issue_type),
-                'priority_id': await self._get_priority_id(priority),
-                'status_id': 1  # 新建状态
+
+    async def get_issue(self, issue_id: int) -> Dict[str, Any]:
+        """获取工单详情，包含变更记录"""
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.base_url}/issues/{issue_id}.json?include=journals,attachments,watchers",
+                headers=self.headers
+            )
+            response.raise_for_status()
+            return response.json()["issue"]
+
+    async def create_issue(self, issue: RedmineIssue) -> int:
+        """创建工单，支持父子工单关联"""
+        payload = {"issue": issue.dict(exclude_none=True)}
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.base_url}/issues.json",
+                headers=self.headers,
+                json=payload
+            )
+            response.raise_for_status()
+            return response.json()["issue"]["id"]
+
+    async def update_issue(self, issue_id: int, updates: Dict[str, Any], notes: str = None):
+        """更新工单状态及备注，支持追加变更记录"""
+        payload = {"issue": updates}
+        if notes:
+            payload["issue"]["notes"] = notes
+            
+        async with httpx.AsyncClient() as client:
+            response = await client.put(
+                f"{self.base_url}/issues/{issue_id}.json",
+                headers=self.headers,
+                json=payload
+            )
+            response.raise_for_status()
+
+    async def upload_attachment(self, issue_id: int, file_content: bytes, filename: str, description: str = ""):
+        """上传附件并关联至工单 - 增加描述字段"""
+        # 1. 上传文件获取 token
+        async with httpx.AsyncClient() as client:
+            upload_resp = await client.post(
+                f"{self.base_url}/uploads.json",
+                headers={**self.headers, "Content-Type": "application/octet-stream"},
+                content=file_content
+            )
+            upload_resp.raise_for_status()
+            token = upload_resp.json()["upload"]["token"]
+            
+            # 2. 关联附件到工单
+            payload = {
+                "issue": {
+                    "uploads": [
+                        {
+                            "token": token, 
+                            "filename": filename, 
+                            "description": description,
+                            "content_type": "application/octet-stream"
+                        }
+                    ]
+                }
             }
-        }
-        
-        if assignee_id:
-            issue_data['issue']['assigned_to_id'] = assignee_id
-        
-        response = requests.post(
-            f"{self.base_url}/issues.json",
-            headers=self.headers,
-            json=issue_data
-        )
-        
-        if response.status_code == 201:
-            return response.json()['issue']
-        else:
-            raise Exception(f"Failed to create Redmine issue: {response.text}")
+            await client.put(
+                f"{self.base_url}/issues/{issue_id}.json",
+                headers=self.headers,
+                json=payload
+            )
+
+    async def list_projects(self) -> List[Dict[str, Any]]:
+        """获取所有可用项目列表"""
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{self.base_url}/projects.json", headers=self.headers)
+            response.raise_for_status()
+            return response.json()["projects"]
+
+
+#### 8.1.2 数据映射与状态同步策略
+
+**状态映射细节 (State Mapping Details)**：
+
+| 内部 TaskState | Redmine Status ID | 状态转换触发条件 |
+| :--- | :--- | :--- |
+| **INITIALIZING** | 1 (New) | 任务被 Agent 接管，生成初始分析计划 |
+| **ANALYZING** | 2 (In Progress) | CodeAgent 开始对代码库执行静态扫描或 LLM 理解 |
+| **PATCH_GENERATING** | 2 (In Progress) | CodeModifier 正在根据分析结论生成补丁 |
+| **TESTING** | 2 (In Progress) | TestAgent 正在配置环境或执行测试用例 |
+| **WAITING_APPROVAL** | 4 (Feedback) | 高风险补丁生成，等待人工在 Redmine 进行“通过/拒绝”操作 |
+| **COMPLETED** | 3 (Resolved) | 测试通过，补丁已成功合并 |
+| **FAILED** | 6 (Rejected) | 多次重试后无法解决问题，或人工在 Redmine 标记为拒绝 |
+
+**双向同步机制与交互流程**：
+
+```mermaid
+sequenceDiagram
+    participant Agent as Agent System
+    participant RS as RedmineService
+    participant RM as Redmine API
+    participant User as Developer
+
+    Agent->>RS: update_task_status(Task_01, TESTING)
+    RS->>RM: PUT /issues/123.json (status_id: 2, notes: "Start testing...")
+    
+    Note over RM, User: User checks issue in Redmine
+    
+    User->>RM: Update Status to "Resolved" (status_id: 3)
+    
+    loop Every 5 Minutes
+        RS->>RM: GET /issues/123.json
+        RM-->>RS: Return status_id: 3
+        RS->>Agent: trigger_event(EXTERNAL_RESOLVE)
+        Agent->>Agent: Stop iteration and Cleanup
+    end
 ```
 
-### 8.2 GitLab集成
+#### 8.1.3 冲突解决与幂等性保障
+
+1. **乐观锁机制**：在更新 Redmine 时检查 `lock_version` (如支持) 或比较 `updated_on` 时间戳，防止 Agent 覆盖人工手动修改。
+2. **幂等创建**：在本地数据库存储 `redmine_issue_id`。创建前先查询，若已存在则执行更新。
+3. **附件冗余清理**：当补丁被重新生成时，在 Redmine 记录中标记旧补丁为“已过时 (Obsolete)”，而不是直接删除。
+
+---
+
+### 8.2 GitLab CI 集成模块
+
+GitLab 集成模块负责代码管理及自动化测试流水线的触发。
+
+#### 8.2.1 Webhook 监听、安全解析与任务路由
+
+系统需要处理多种 GitLab 事件，并确保请求来源合法。
 
 ```python
-import gitlab
-from typing import Dict, Any, List, Optional
-import base64
-
-class GitLabIntegration:
-    """GitLab集成服务"""
-    
-    def __init__(self, config: Dict[str, Any]):
-        self.gitlab_url = config['gitlab_url']
-        self.token = config['gitlab_token']
-        self.project_id = config['gitlab_project_id']
-        
-        self.gl = gitlab.Gitlab(self.gitlab_url, private_token=self.token)
-        self.project = self.gl.projects.get(self.project_id)
-    
-    async def create_merge_request(self,
-                                  source_branch: str,
-                                  target_branch: str,
-                                  title: str,
-                                  description: str,
-                                  labels: Optional[List[str]] = None) -> Dict[str, Any]:
-        """创建合并请求"""
-        
-        mr_data = {
-            'source_branch': source_branch,
-            'target_branch': target_branch,
-            'title': title,
-            'description': description,
-            'remove_source_branch': True
-        }
-        
-        if labels:
-            mr_data['labels'] = ','.join(labels)
-        
-        mr = self.project.mergerequests.create(mr_data)
-        
-        return {
-            'id': mr.id,
-            'iid': mr.iid,
-            'title': mr.title,
-            'description': mr.description,
-            'web_url': mr.web_url,
-            'status': mr.state
-        }
-```
-
-### 8.3 Webhook集成（后续阶段）
-
-> 说明：Webhook 接入属于后续阶段增强能力，需同步更新 docs/API_SPEC.md 中的接口定义。
-
-```python
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
 import hmac
 import hashlib
-import json
-from typing import Dict, Any, Callable
 
-class WebhookManager:
-    """Webhook管理器"""
-    
-    def __init__(self, config: Dict[str, Any]):
-        self.config = config
-        self.webhook_handlers: Dict[str, Callable] = {}
-        self.secret_token = config.get('webhook_secret', 'default_secret')
+class GitLabWebhookManager:
+    def __init__(self, secret_token: str):
+        self.secret_token = secret_token
+
+    def verify_token(self, x_gitlab_token: str) -> bool:
+        """校验 Webhook Token"""
+        return hmac.compare_digest(x_gitlab_token, self.secret_token)
+
+    async def parse_and_route(self, request: Request):
+        if not self.verify_token(request.headers.get("X-Gitlab-Token")):
+            raise HTTPException(status_code=403, detail="Invalid token")
+            
+        payload = await request.json()
+        event_type = request.headers.get("X-Gitlab-Event")
         
-    def register_handler(self, event_type: str, handler: Callable):
-        """注册Webhook处理器"""
-        self.webhook_handlers[event_type] = handler
-    
-    def verify_signature(self, payload: bytes, signature: str) -> bool:
-        """验证Webhook签名"""
-        expected_signature = hmac.new(
-            self.secret_token.encode('utf-8'),
-            payload,
-            hashlib.sha256
-        ).hexdigest()
-        
-        return hmac.compare_digest(f"sha256={expected_signature}", signature)
+        if event_type == "Push Hook":
+            # 路由至代码变更分析逻辑
+            return await self._route_push_event(payload)
+        elif event_type == "Merge Request Hook":
+            # 路由至 MR 质量门禁逻辑
+            return await self._route_mr_event(payload)
+        elif event_type == "Pipeline Hook":
+            # 路由至测试结果回填逻辑
+            return await self._route_pipeline_event(payload)
+
+    async def _route_pipeline_event(self, payload: Dict[str, Any]):
+        """处理流水线状态变更通知"""
+        pipeline_id = payload["object_attributes"]["id"]
+        status = payload["object_attributes"]["status"]
+        # 通知 TestAgent 流水线已完成
+        return {"type": "PIPELINE_UPDATE", "id": pipeline_id, "status": status}
 ```
+
+#### 8.2.2 动态 CI 流水线触发与环境参数注入
+
+通过注入特定的 `CI_JOB_TOKEN` 和自定义变量，实现流水线的高度可定制化。
+
+```python
+class GitLabCIClient:
+    """GitLab CI 交互客户端"""
+    
+    async def trigger_test_pipeline(self, 
+                                   project_id: int, 
+                                   branch: str, 
+                                   agent_params: Dict[str, str]) -> int:
+        """
+        触发测试流水线
+        :param agent_params: 包含测试环境配置、Agent ID 等
+        """
+        project = self.gl.projects.get(project_id)
+        # 构造注入变量
+        vars = [
+            {'key': 'AGENT_DRIVEN_TEST', 'value': 'true'},
+            {'key': 'TEST_TARGET_ARCH', 'value': agent_params.get('arch', 'x86_64')},
+            {'key': 'SIMULATION_TIME', 'value': agent_params.get('timeout', '3600')}
+        ]
+        
+        pipeline = project.pipelines.create({
+            'ref': branch,
+            'variables': vars
+        })
+        return pipeline.id
+
+    async def get_job_artifacts(self, project_id: int, job_id: int):
+        """下载特定的 Job 产物（如测试报告、QEMU 日志）"""
+        project = self.gl.projects.get(project_id)
+        job = project.jobs.get(job_id)
+        with open(f"artifacts_{job_id}.zip", "wb") as f:
+            job.artifacts(streamed=True, action=f.write)
+```
+
+#### 8.2.3 构建结果回写与评论功能
+
+Agent 可以在 MR 中自动发表评论，告知测试进度和分析结论。
+
+```python
+    async def post_mr_comment(self, project_id: int, mr_iid: int, body: str):
+        """在 Merge Request 中发表 Agent 分析评论"""
+        project = self.gl.projects.get(project_id)
+        mr = project.mergerequests.get(mr_iid)
+        mr.notes.create({'body': body})
+```
+
+---
+
+### 8.3 统一 HTTP 客户端与重试策略
+
+为了应对外部服务（Redmine, GitLab, LLM API）的网络抖动，系统构建了带有容错机制的 HTTP 客户端。
+
+#### 8.3.1 增强型指数退避重试 (Exponential Backoff with Jitter)
+
+简单的重试可能导致“惊群效应”，引入抖动（Jitter）可以平衡负载。
+
+```python
+import random
+import asyncio
+
+async def retry_with_jitter(func, max_retries=5, base_delay=1.0):
+    for i in range(max_retries):
+        try:
+            return await func()
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            if i == max_retries - 1:
+                raise e
+            # 计算延迟: base_delay * 2^i + random jitter
+            delay = base_delay * (2 ** i) + random.uniform(0, 1)
+            await asyncio.sleep(delay)
+```
+
+#### 8.3.2 错误分类处理与服务隔离
+
+1. **连接隔离 (Connection Pooling)**：为不同的服务配置独立的连接池。
+   ```python
+   llm_limits = httpx.Limits(max_connections=10, max_keepalive_connections=5)
+   gitlab_limits = httpx.Limits(max_connections=50, max_keepalive_connections=10)
+   ```
+2. **超时分类 (Timeout Strategies)**：
+   - **Redmine**: 10s (通常响应快)
+   - **GitLab Pipeline**: 30s (触发可能慢)
+   - **LLM API**: 120s (生成过程长)
+
+---
+
+### 8.4 大模型 API 抽象层
+
+LLM 抽象层通过标准接口隔离各厂商差异，并提供 Token 计算与并发治理能力。
+
+#### 8.4.1 LLMProvider 基类与能力发现
+
+```python
+from abc import ABC, abstractmethod
+from typing import AsyncGenerator
+
+class LLMProvider(ABC):
+    def __init__(self, model_name: str, config: Dict[str, Any]):
+        self.model_name = model_name
+        self.config = config
+
+    @abstractmethod
+    async def chat(self, messages: List[Dict[str, str]]) -> LLMResponse:
+        pass
+
+    @abstractmethod
+    async def stream_chat(self, messages: List[Dict[str, str]]) -> AsyncGenerator[str, None]:
+        pass
+
+    def count_tokens(self, text: str) -> int:
+        """默认实现，子类可覆盖（如使用 tiktoken）"""
+        return len(text) // 4 
+```
+
+#### 8.4.2 供应商实现细节
+
+- **OpenAIProvider**: 使用 `openai` 官方 SDK，支持 `gpt-4-turbo` 和 `gpt-3.5-turbo`。
+- **InternalVLLMProvider**: 对接内网 `vLLM` 部署的 `Llama-3-70B`，通过 `v1/chat/completions` 接口交互。
+- **MockProvider**: 用于本地 CI 测试，返回预定义的模拟输出。
+
+#### 8.4.3 并发限流、优先级队列与配额管理
+
+针对内网资源受限场景，实现优先级调度：
+
+```python
+class PriorityLLMQueue:
+    def __init__(self):
+        self.queues = {
+            "HIGH": asyncio.Queue(),  # CodeAgent 修改逻辑
+            "NORMAL": asyncio.Queue(), # TestAgent 解析日志
+            "LOW": asyncio.Queue()     # KBAgent 向量化
+        }
+
+    async def get_next_task(self):
+        # 按照优先级顺序检查队列
+        for p in ["HIGH", "NORMAL", "LOW"]:
+            if not self.queues[p].empty():
+                return await self.queues[p].get()
+        return None
+```
+
+---
+
+### 8.5 故障转移、降级策略与自愈能力
+
+#### 8.5.1 多层级降级矩阵 (Degradation Matrix)
+
+| 故障场景 | 核心受损功能 | 降级方案 |
+| :--- | :--- | :--- |
+| **LLM API 宕机** | 修改建议生成、日志深度分析 | 切换至备用模型（如从 GPT-4 降级至本地开源模型）；切换至本地静态规则引擎 (Clang-Tidy) |
+| **GitLab 无法访问** | 代码同步、CI 触发 | 使用本地缓存的旧版本代码执行实验；排队等待直到恢复 |
+| **Redmine 宕机** | 任务跟踪、审批流 | 切换至本地嵌入式数据库 (SQLite) 记录状态，恢复后重放 |
+| **QEMU 环境耗尽** | 测试执行 | 任务进入等待队列；自动释放 2 小时以上的僵尸环境 |
+
+#### 8.5.2 断路器模式 (Circuit Breaker) 实现
+
+```python
+from enum import Enum
+
+class CBState(Enum):
+    CLOSED = "closed"   # 正常
+    OPEN = "open"       # 熔断
+    HALF_OPEN = "half"  # 尝试恢复
+
+class CircuitBreaker:
+    def __init__(self, failure_threshold=5, reset_timeout=60):
+        self.state = CBState.CLOSED
+        self.failure_count = 0
+        self.failure_threshold = failure_threshold
+        self.reset_timeout = reset_timeout
+        self._last_failure_time = 0
+
+    def record_failure(self):
+        self.failure_count += 1
+        if self.failure_count >= self.failure_threshold:
+            self.state = CBState.OPEN
+            self._last_failure_time = asyncio.get_event_loop().time()
+
+    def can_execute(self) -> bool:
+        if self.state == CBState.CLOSED:
+            return True
+        if self.state == CBState.OPEN:
+            if asyncio.get_event_loop().time() - self._last_failure_time > self.reset_timeout:
+                self.state = CBState.HALF_OPEN
+                return True
+            return False
+        return True # HALF_OPEN 状态允许尝试
+```
+
+#### 8.5.3 离线恢复与自愈流程 (Self-healing)
+
+1. **状态对齐 (State Reconciliation)**：系统重启后，首先与 GitLab 和 Redmine 进行状态对齐。若 GitLab CI 已完成而系统未记录，自动触发 `ResultAnalyzer`。
+2. **重试队列持久化**：所有待重试的任务均存储在持久化消息队列中，防止进程异常退出导致任务丢失。
 
 ---
 
@@ -4075,7 +4353,7 @@ class WebhookManager:
 5. **数据模型设计**：SQLAlchemy ORM完整定义
 6. **API规范设计**：FastAPI路由完整实现
 7. **配置策略设计**：环境变量、启动策略、部署配置
-8. **集成设计**：Redmine、GitLab、Webhook集成实现
+8. **集成服务设计**：Redmine、GitLab、大模型 API 集成及故障降级策略
 
 每个模块都提供了详细的接口定义、实现要点、技术规格和完成标准，为Phase 2-6的工程实现提供了精确的技术指导。
 
