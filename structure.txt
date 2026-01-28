@@ -1,6 +1,22 @@
 dev-agents-v2/
 ├── docs/                        # Architecture, design, and plan docs
-├── src/                         # Application source code
+│   ├── PROJECT_COMMAND_CENTER.md
+│   ├── PHASE_1_TASK_BREAKDOWN.md
+│   ├── PHASE_2_TASK_BREAKDOWN.md
+│   ├── REQUIREMENTS.md
+│   ├── ARCHITECTURE_V2.md
+│   ├── KNOWLEDGE_SCHEMA.md
+│   ├── AGENT_DESIGN.md
+│   ├── STATE_MACHINE.md
+│   ├── WORK_PLAN_V2.md
+│   ├── DETAILED_DESIGN_V2.md
+│   ├── API_SPEC.md
+│   ├── DIR_STRUCTURE.md
+│   ├── WORK_PLAN.md
+│   ├── PROJECT_PROGRESS.md
+│   ├── CLEANUP_LOG.md
+│   └── TASK_CONTEXT_GUIDE.md
+├── src/                         # Application source code (planned; not yet in repo)
 │   ├── api/                     # REST/Web API layer
 │   ├── agents/                  # Multi-agent definitions and workflows
 │   ├── executor/                # Testing environment adapters
@@ -9,9 +25,9 @@ dev-agents-v2/
 │   ├── tools/                   # Agent tool implementations
 │   ├── config/                  # Configuration handlers
 │   └── utils/                   # Shared helpers
-├── tests/                       # Automated tests
-├── scripts/                     # Operational scripts
-├── docker/                      # Containerization files
+├── tests/                       # Automated tests (planned)
+├── scripts/                     # Operational scripts (planned)
+├── docker/                      # Containerization files (planned)
 ├── config/                      # Configuration files
 ├── requirements.txt             # Dependency list
 ├── README.md                    # Project landing page

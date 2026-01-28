@@ -10,6 +10,67 @@
 
 ---
 
+## 导航索引
+
+- 0. Phase 2 MVP 边界说明
+- 1. 核心模块详细设计
+- 2. CrewAI Agent系统详细设计
+- 3. LangGraph状态机详细设计
+- 4. 知识库系统详细设计
+- 5. 数据模型
+- 6. API规范
+- 7. 配置与策略
+- 8. 集成设计（含Webhook，后续阶段）
+- 9. 运行约束与治理（并发、权限、限流、记忆、日志）
+
+## 0. Phase 2 MVP 边界说明
+
+为避免范围膨胀，Phase 2 仅实现“闭环最小可用链路”，其余能力作为后续阶段增强：
+
+- **Phase 2 必做**：CodeAnalyzer、CodeModifier、TestOrchestrator、ResultAnalyzer 的最小闭环；CLI 最小入口；基础日志与配置。
+- **Phase 2 延后**：Webhook 集成、WebUI、监控告警、缓存加速、完整 RBAC/多租户支持。
+- **可选依赖**：Redis 缓存、对象存储/存储服务，仅在明确需求与验收后引入。
+
+### 0.1 模块依赖与实现顺序（Phase 2）
+
+1. **基础设施与配置**：配置加载、日志初始化、基础目录与依赖检查。
+2. **CodeAnalyzer → CodeModifier**：确保分析结果可直接生成可执行的修改计划。
+3. **TestOrchestrator**：打通最小测试执行路径（QEMU优先）。
+4. **ResultAnalyzer**：统一测试结果解析与结构化输出，为闭环决策提供输入。
+5. **最小CLI入口**：串联上述模块形成闭环路径。
+
+---
+
+## 9. 运行约束与治理（并发、权限、限流、记忆、日志）
+
+### 9.1 并发与异步策略
+- 核心I/O流程（仓库拉取、模型调用、测试执行、日志采集）必须使用 `async/await` 接口。
+- 任务级并行与资源锁（板卡、端口）使用调度器统一管理。
+
+### 9.2 Agent解耦与消息总线
+- Agent间通信通过消息总线/事件队列完成，禁止直接调用对方内部实现。
+- 消息包含 `task_id`、`iteration_id`、`sender`、`receiver`、`payload_schema_version`。
+
+### 9.3 LLM输出结构化校验
+- LLM输出统一映射到Pydantic模型（示例：PatchPlan、TestPlan、AnalysisSummary）。
+- 校验失败时进入降级流程（重试/模板化/人工介入），不得进入执行阶段。
+
+### 9.4 工具执行权限与范围
+- 工具执行需受限于路径白名单、命令白名单与运行环境隔离。
+- 权限校验失败必须记录审计日志并阻断执行。
+
+### 9.5 Token与迭代预算
+- 为每次模型调用设置最大Token上限与超时。
+- 状态机必须配置最大迭代次数与收敛条件（超限即终止或人工介入）。
+
+### 9.6 记忆分层策略
+- **短期记忆**：仅存当前任务上下文，设置窗口与TTL。
+- **长期记忆**：仅写入已验证的知识单元（KnowledgeUnit），进入向量检索体系。
+
+### 9.7 结构化日志与可追溯性
+- 每个步骤输出结构化日志，至少包含 `task_id`、`iteration_id`、`step`、`status`。
+- 关键结论与决策必须引用证据（日志行、KnowledgeUnit ID或artifact链接）。
+
 ## 1. 核心模块详细设计
 
 ### 1.1 CodeAnalyzer（代码分析器）
@@ -161,7 +222,49 @@ class CodeModifier:
 - 支持原子性操作，要么全部成功要么全部回滚
 - 提供详细的修改日志和影响分析
 
-### 1.3 TestOrchestrator（测试编排器）
+### 1.3 ResultAnalyzer（结果分析器）
+
+**职责定位**：对测试产物进行结构化解析与归因汇总，输出可用于决策的分析结果。
+
+**核心功能**：
+- 日志/报告解析与标准化
+- 失败类型归类与证据抽取
+- 关键指标统计（耗时、通过率、失败分布）
+- 生成结构化分析结论与建议摘要
+
+**接口定义**：
+```python
+@dataclass
+class RawTestArtifacts:
+    logs: List[str]
+    reports: List[str]
+    metrics: Dict[str, Any]
+
+@dataclass
+class AnalysisSummary:
+    status: str
+    failure_type: Optional[str]
+    evidence: List[str]
+    recommendations: List[str]
+    metrics: Dict[str, Any]
+
+class ResultAnalyzer:
+    """结果分析器主接口"""
+
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.parsers = self._init_parsers()
+
+    async def analyze(self, artifacts: RawTestArtifacts) -> AnalysisSummary:
+        """解析测试产物并输出结构化结论"""
+        pass
+```
+
+**实现要点**：
+- 解析器可插件化扩展（不同测试框架/日志格式）。
+- 输出需满足可追溯性要求（保留证据引用）。
+
+### 1.4 TestOrchestrator（测试编排器）
 
 **职责定位**：统一的测试执行编排引擎，支持多环境测试
 
@@ -1633,8 +1736,9 @@ class StartupStrategy:
             # 1. 初始化数据库
             await self._init_database()
             
-            # 2. 初始化Redis
-            await self._init_redis()
+            # 2. 初始化Redis（可选：仅在启用缓存加速时）
+            if self.config.get("cache_enabled"):
+                await self._init_redis()
             
             # 3. 初始化Qdrant
             await self._init_qdrant()
@@ -1761,7 +1865,9 @@ class GitLabIntegration:
         }
 ```
 
-### 8.3 Webhook集成
+### 8.3 Webhook集成（后续阶段）
+
+> 说明：Webhook 接入属于后续阶段增强能力，需同步更新 docs/API_SPEC.md 中的接口定义。
 
 ```python
 from fastapi import FastAPI, Request, HTTPException
