@@ -32,6 +32,15 @@ This document defines the internal and external APIs for the AI-Driven Firmware 
 ### `POST /jobs`
 - **Description**: Create a new agentic testing/fixing job.
 
+### `GET /jobs/{job_id}`
+- **Description**: Fetch job status, current phase, and summary.
+
+### `GET /jobs/{job_id}/artifacts`
+- **Description**: List artifacts (logs, reports, patches) produced by a job.
+
+### `GET /jobs/{job_id}/report`
+- **Description**: Download the final report for a job (Markdown/JSON).
+
 ## 3. Webhook Endpoints (Optional)
 
 ### `POST /webhooks/gitlab`
