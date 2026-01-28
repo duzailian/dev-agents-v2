@@ -86,16 +86,29 @@ class ConvergenceType(Enum):
     TIMEOUT = "timeout"
 
 class ConvergenceCriteria(TypedDict):
-    """收敛判断标准"""
-    target_pass_rate: float           # 目标通过率（100%）
-    failure_rate_threshold: float     # 失败率阈值（70%）
-    min_improvement_percent: float    # 最小改进度（5%）
-    plateau_improvement_threshold: float  # 平台期改进阈值（1%）
-    min_stable_iterations: int        # 最小稳定迭代次数（2）
-    stability_variance_threshold: float  # 稳定性方差阈值（2%）
-    min_iterations_for_plateau: int   # 平台期判定的最小迭代次数（7）
-    min_iterations_for_slow_improvement: int  # 改进缓慢判定的最小迭代次数（5）
-    consecutive_failure_threshold: int  # 连续失败阈值（2）
+    """收敛判断标准（量化，避免死循环/误判）"""
+
+    # 目标通过率阈值（default: 100%）
+    target_pass_rate: float
+
+    # 失败判定：失败率阈值 + 连续超阈值次数
+    failure_rate_threshold: float
+    failure_rate_consecutive_limit: int
+
+    # 改进度指标（通过用例数增长百分比）
+    avg_improvement_window: int
+    slow_improvement_threshold: float
+    plateau_improvement_threshold: float
+    min_iterations_for_slow_improvement: int
+    min_iterations_for_plateau: int
+
+    # 稳定度指标（相邻迭代通过率差异）
+    stable_iterations_required: int
+    stability_delta_threshold: float
+
+    # “无改进”判定（用于 FAILURE / CONVERGED_WITH_IMPROVEMENT）
+    no_improvement_epsilon: float
+    consecutive_no_improvement_limit: int
 
 class State(TypedDict):
     """LangGraph共享状态"""
@@ -122,7 +135,7 @@ class State(TypedDict):
     # 决策与追踪
     decision: Optional[Dict[str, Any]]
     decision_trace: List[Dict[str, Any]]
-    convergence_type: Optional[str]
+    convergence_type: Optional[ConvergenceType]
     convergence_reason: Optional[str]
 ```
 
@@ -135,274 +148,373 @@ from dataclasses import dataclass
 
 @dataclass
 class ConvergenceCriteria:
-    """收敛判断标准"""
-    # 目标阈值
-    target_pass_rate: float = 1.0            # 目标通过率（100%，可配置）
-    failure_rate_threshold: float = 0.70      # 失败率阈值（70%）
+    """收敛判断标准（LangGraph `convergence_check` 节点使用）"""
 
-    # 改进度指标
-    min_improvement_percent: float = 0.05    # 最小改进度（5%）
-    plateau_improvement_threshold: float = 0.01  # 平台期改进阈值（1%）
+    # 1) 目标通过率阈值（default: 100%，可配置）
+    target_pass_rate: float = 1.0
 
-    # 稳定度指标
-    min_stable_iterations: int = 2           # 最小稳定迭代次数
-    stability_variance_threshold: float = 0.02  # 稳定性方差阈值（2%）
+    # 2) 失败率阈值（当失败率连续 N 次超过阈值时判定 FAILURE）
+    failure_rate_threshold: float = 0.70
+    failure_rate_consecutive_limit: int = 3
 
-    # 迭代控制
-    min_iterations_for_plateau: int = 7       # 平台期判定的最小迭代次数
-    min_iterations_for_slow_improvement: int = 5  # 改进缓慢判定的最小迭代次数
-    consecutive_failure_threshold: int = 2    # 连续失败阈值
+    # 3) 改进度指标（通过用例数增长百分比）
+    avg_improvement_window: int = 3
+    slow_improvement_threshold: float = 0.05
+    plateau_improvement_threshold: float = 0.01
+    min_iterations_for_slow_improvement: int = 5
+    min_iterations_for_plateau: int = 7
 
-# 预定义收敛标准
-STANDARD_CRITERIA = ConvergenceCriteria(
-    target_pass_rate=1.0,
-    failure_rate_threshold=0.70,
-    min_improvement_percent=0.05,
-    plateau_improvement_threshold=0.01,
-    min_stable_iterations=2,
-    stability_variance_threshold=0.02,
-    min_iterations_for_plateau=7,
-    min_iterations_for_slow_improvement=5,
-    consecutive_failure_threshold=2
-)
+    # 4) 稳定度指标（相邻迭代通过率差异）
+    stable_iterations_required: int = 2
+    stability_delta_threshold: float = 0.02
+
+    # 5) “无改进”定义
+    no_improvement_epsilon: float = 0.0
+    consecutive_no_improvement_limit: int = 2
+
+STANDARD_CRITERIA = ConvergenceCriteria()
 ```
 
 #### 3.4.2 收敛度评分算法
 
-**1. 改进度计算**
+**0. 输入与记号**
+
+- 第 `i` 次迭代结果：`pass_count[i]`、`total_count[i]`
+- 通过率：`pass_rate[i] = pass_count[i] / max(total_count[i], 1)`
+- 失败率：`failure_rate[i] = 1 - pass_rate[i]`
+
+**1. 改进度计算（pass_count 增量百分比）**
+
+满足“计算当前迭代与前一迭代的改进度（pass_count 增加的百分比）”的量化定义：
+
+- `improvement_rate(i) = (pass_count[i] - pass_count[i-1]) / max(total_count[i-1], 1)`
 
 ```python
-def calculate_improvement(previous_pass_count: int, current_pass_count: int,
-                         previous_total: int, current_total: int) -> float:
-    """
-    计算改进度（通过用例数增长的百分比）
+def pass_rate(pass_count: int, total_count: int) -> float:
+    return pass_count / max(total_count, 1)
 
-    Args:
-        previous_pass_count: 前一次迭代通过用例数
-        current_pass_count: 当前迭代通过用例数
-        previous_total: 前一次迭代总用例数
-        current_total: 当前迭代总用例数
-
-    Returns:
-        改进度（百分比，0-1之间）
-    """
-    # 计算通过率
-    prev_pass_rate = previous_pass_count / max(previous_total, 1)
-    curr_pass_rate = current_pass_count / max(current_total, 1)
-
-    # 计算改进度
-    improvement = curr_pass_rate - prev_pass_rate
-
-    # 如果用例总数变化，需要标准化
-    if current_total != previous_total:
-        absolute_improvement = current_pass_count - previous_pass_count
-        improvement = absolute_improvement / max(current_total, previous_total)
-
-    return max(0.0, improvement)  # 只计算正向改进
+def improvement_rate(prev_pass: int, curr_pass: int, prev_total: int) -> float:
+    """通过用例数增长百分比（可为负数表示回退）。"""
+    return (curr_pass - prev_pass) / max(prev_total, 1)
 ```
 
-**2. 平均改进度计算**
+**2. 相邻 3 个迭代的平均改进度**
+
+- 计算最近 `avg_improvement_window=3` 个相邻差分的平均值。
+- 用于判定“改进缓慢（<5% 且迭代>=5）”与“平台期（<1% 且迭代>=7）”。
 
 ```python
-def calculate_average_improvement(pass_counts: List[int],
-                                 total_counts: List[int],
-                                 window: int = 3) -> float:
-    """
-    计算滑动窗口内的平均改进度
-
-    Args:
-        pass_counts: 各次迭代的通过用例数列表
-        total_counts: 各次迭代的总用例数列表
-        window: 滑动窗口大小
-
-    Returns:
-        平均改进度
-    """
+def average_improvement_rate(
+    pass_counts: List[int],
+    total_counts: List[int],
+    window: int = 3,
+) -> float:
     if len(pass_counts) < 2:
         return 0.0
 
-    improvements = []
-    for i in range(1, min(window + 1, len(pass_counts))):
-        improvement = calculate_improvement(
-            pass_counts[i - 1], pass_counts[i],
-            total_counts[i - 1], total_counts[i]
-        )
-        improvements.append(improvement)
+    start = max(1, len(pass_counts) - window)
+    deltas: List[float] = []
 
-    return sum(improvements) / len(improvements) if improvements else 0.0
+    for i in range(start, len(pass_counts)):
+        # 只统计正向改进（负改进单独作为回退信号处理）
+        delta = improvement_rate(pass_counts[i - 1], pass_counts[i], total_counts[i - 1])
+        deltas.append(max(0.0, delta))
+
+    return sum(deltas) / len(deltas) if deltas else 0.0
 ```
 
-**3. 稳定度计算**
+**3. 稳定度指标（相邻迭代结果差异度）**
+
+- `stability_delta(i) = abs(pass_rate[i] - pass_rate[i-1])`
+- 当 `stability_delta(i) <= stability_delta_threshold` 时认为稳定
 
 ```python
-import statistics
+def stability_delta(prev_rate: float, curr_rate: float) -> float:
+    return abs(curr_rate - prev_rate)
 
-def calculate_stability(pass_rates: List[float]) -> float:
-    """
-    计算稳定度（通过率的方差）
+def stable_for_last_n_iterations(
+    pass_rates: List[float],
+    n: int,
+    delta_threshold: float,
+) -> bool:
+    if len(pass_rates) < n:
+        return False
 
-    Args:
-        pass_rates: 各次迭代的通过率列表
-
-    Returns:
-        稳定度（方差值，越小越稳定）
-    """
-    if len(pass_rates) < 2:
-        return 0.0
-
-    return statistics.variance(pass_rates)
+    for i in range(len(pass_rates) - n + 1, len(pass_rates)):
+        if i == 0:
+            continue
+        if stability_delta(pass_rates[i - 1], pass_rates[i]) > delta_threshold:
+            return False
+    return True
 ```
 
-**4. 收敛判定**
+**4. 收敛度评分（可选，0-1）**
 
 ```python
+def convergence_score(
+    curr_pass_rate: float,
+    target_pass_rate: float,
+    last_stability_delta: float,
+    avg_improvement: float,
+    criteria: ConvergenceCriteria,
+) -> float:
+    eps = 1e-9
+
+    progress_score = min(1.0, curr_pass_rate / max(target_pass_rate, eps))
+    stability_score = max(0.0, 1.0 - last_stability_delta / max(criteria.stability_delta_threshold, eps))
+    slowdown_score = max(0.0, 1.0 - avg_improvement / max(criteria.slow_improvement_threshold, eps))
+
+    return 0.5 * progress_score + 0.3 * stability_score + 0.2 * slowdown_score
+```
+
+**5. 收敛/终止判定（核心）**
+
+```python
+from typing import Optional
+
+def _streak_from_tail(values: List[bool]) -> int:
+    n = 0
+    for v in reversed(values):
+        if not v:
+            break
+        n += 1
+    return n
+
 def determine_convergence(
     pass_counts: List[int],
     total_counts: List[int],
     criteria: ConvergenceCriteria,
     current_iteration: int,
-    max_iterations: int
+    max_iterations: int,
 ) -> tuple[Optional[ConvergenceType], str]:
+    """判定终止类型。
+
+    注意：current_iteration 表示“已完成的迭代编号”。当 current_iteration >= max_iterations 时，
+    下一轮将导致 iteration_index > max_iterations，因此判定 TIMEOUT。
     """
-    判定收敛状态
 
-    Returns:
-        (收敛类型, 判定原因)
-    """
-    # 计算当前通过率
-    current_pass_count = pass_counts[-1]
-    current_total = total_counts[-1]
-    current_pass_rate = current_pass_count / max(current_total, 1)
+    pass_rates = [pass_rate(pc, tc) for pc, tc in zip(pass_counts, total_counts)]
+    curr_pass_rate = pass_rates[-1]
+    curr_failure_rate = 1.0 - curr_pass_rate
 
-    # 计算失败率
-    failure_rate = 1.0 - current_pass_rate
-
-    # 1. SUCCESS 判定：通过率达到目标且连续稳定
-    if current_pass_rate >= criteria.target_pass_rate:
-        # 检查稳定性
-        if len(pass_counts) >= criteria.min_stable_iterations + 1:
-            recent_rates = [pc / max(tc, 1) for pc, tc in
-                           zip(pass_counts[-criteria.min_stable_iterations:],
-                               total_counts[-criteria.min_stable_iterations:])]
-            stability = calculate_stability(recent_rates)
-
-            if stability <= criteria.stability_variance_threshold:
-                return (ConvergenceType.SUCCESS,
-                       f"通过率 {current_pass_rate:.1%} 达到目标且连续{criteria.min_stable_iterations}次迭代稳定")
-
-    # 2. FAILURE 判定：失败率过高且连续无改进
-    if failure_rate > criteria.failure_rate_threshold:
-        if len(pass_counts) >= criteria.consecutive_failure_threshold + 1:
-            # 检查连续迭代是否有改进
-            recent_improvements = []
-            for i in range(1, criteria.consecutive_failure_threshold + 1):
-                if len(pass_counts) > i:
-                    improvement = calculate_improvement(
-                        pass_counts[-i - 1], pass_counts[-i],
-                        total_counts[-i - 1], total_counts[-i]
-                    )
-                    recent_improvements.append(improvement)
-
-            if all(imp < criteria.min_improvement_percent
-                   for imp in recent_improvements):
-                return (ConvergenceType.FAILURE,
-                       f"失败率 {failure_rate:.1%} 超过阈值且连续{criteria.consecutive_failure_threshold}次迭代无改进")
-
-    # 3. TIMEOUT 判定
+    # 0) TIMEOUT（优先级最高，避免任何死循环）
     if current_iteration >= max_iterations:
-        return (ConvergenceType.TIMEOUT,
-               f"达到最大迭代次数 {max_iterations}")
+        return (ConvergenceType.TIMEOUT, f"TIMEOUT: current_iteration={current_iteration} >= max_iterations={max_iterations}")
 
-    # 4. PLATEAUED 判定：平均改进度小于阈值且已迭代足够次数
-    if current_iteration >= criteria.min_iterations_for_plateau:
-        avg_improvement = calculate_average_improvement(
-            pass_counts, total_counts, window=3
+    avg_improvement = average_improvement_rate(
+        pass_counts,
+        total_counts,
+        window=criteria.avg_improvement_window,
+    )
+
+    last_delta = 0.0
+    if len(pass_rates) >= 2:
+        last_delta = stability_delta(pass_rates[-2], pass_rates[-1])
+
+    is_stable = stable_for_last_n_iterations(
+        pass_rates,
+        n=criteria.stable_iterations_required,
+        delta_threshold=criteria.stability_delta_threshold,
+    )
+
+    high_failure_flags = [(1.0 - r) > criteria.failure_rate_threshold for r in pass_rates]
+    high_failure_streak = _streak_from_tail(high_failure_flags)
+
+    no_improvement_flags: List[bool] = []
+    for i in range(1, len(pass_counts)):
+        delta = improvement_rate(pass_counts[i - 1], pass_counts[i], total_counts[i - 1])
+        no_improvement_flags.append(delta <= criteria.no_improvement_epsilon)
+    no_improvement_streak = _streak_from_tail(no_improvement_flags)
+
+    # 1) SUCCESS：通过率达到目标 && 连续 2 个迭代稳定
+    if curr_pass_rate >= criteria.target_pass_rate and is_stable:
+        return (
+            ConvergenceType.SUCCESS,
+            (
+                f"SUCCESS: pass_rate={curr_pass_rate:.1%} >= target={criteria.target_pass_rate:.1%} "
+                f"&& stable(last {criteria.stable_iterations_required}) delta={last_delta:.2%} <= {criteria.stability_delta_threshold:.2%}"
+            ),
         )
-        if avg_improvement < criteria.plateau_improvement_threshold:
-            return (ConvergenceType.PLATEAUED,
-                   f"平均改进度 {avg_improvement:.1%} < {criteria.plateau_improvement_threshold:.1%} 且已迭代{current_iteration}次（建议人工介入）")
 
-    # 5. 改进缓慢判定
-    if current_iteration >= criteria.min_iterations_for_slow_improvement:
-        avg_improvement = calculate_average_improvement(
-            pass_counts, total_counts, window=3
+    # 2) FAILURE：失败率连续 3 次超过阈值（或高失败率+连续无改进）
+    if high_failure_streak >= criteria.failure_rate_consecutive_limit:
+        return (
+            ConvergenceType.FAILURE,
+            (
+                f"FAILURE: failure_rate={curr_failure_rate:.1%} > threshold={criteria.failure_rate_threshold:.1%} "
+                f"for {high_failure_streak} consecutive iterations (limit={criteria.failure_rate_consecutive_limit})"
+            ),
         )
-        if avg_improvement < criteria.min_improvement_percent:
-            return (ConvergenceType.CONVERGED_WITH_IMPROVEMENT,
-                   f"平均改进度 {avg_improvement:.1%} < {criteria.min_improvement_percent:.1%} 且已迭代{current_iteration}次，但已改进至最优")
 
-    # 未收敛，继续迭代
+    if (
+        curr_failure_rate > criteria.failure_rate_threshold
+        and no_improvement_streak >= criteria.consecutive_no_improvement_limit
+    ):
+        return (
+            ConvergenceType.FAILURE,
+            (
+                f"FAILURE: failure_rate={curr_failure_rate:.1%} > threshold={criteria.failure_rate_threshold:.1%} "
+                f"&& no_improvement_streak={no_improvement_streak} >= {criteria.consecutive_no_improvement_limit}"
+            ),
+        )
+
+    # 3) PLATEAUED：平均改进度 < 1% && 已迭代 >= 7 次（建议人工介入）
+    if (
+        current_iteration >= criteria.min_iterations_for_plateau
+        and avg_improvement < criteria.plateau_improvement_threshold
+    ):
+        return (
+            ConvergenceType.PLATEAUED,
+            (
+                f"PLATEAUED: avg_improvement={avg_improvement:.2%} < {criteria.plateau_improvement_threshold:.2%} "
+                f"&& current_iteration={current_iteration} >= {criteria.min_iterations_for_plateau}"
+            ),
+        )
+
+    # 4) CONVERGED_WITH_IMPROVEMENT：未达目标，但已到当前策略最优点且改进无法进一步提升
+    best_pass_count = max(pass_counts)
+    if (
+        curr_pass_rate < criteria.target_pass_rate
+        and pass_counts[-1] == best_pass_count
+        and current_iteration >= criteria.min_iterations_for_slow_improvement
+        and avg_improvement < criteria.slow_improvement_threshold
+        and no_improvement_streak >= criteria.consecutive_no_improvement_limit
+    ):
+        return (
+            ConvergenceType.CONVERGED_WITH_IMPROVEMENT,
+            (
+                f"CONVERGED_WITH_IMPROVEMENT: best_pass_count={best_pass_count}, pass_rate={curr_pass_rate:.1%} < target={criteria.target_pass_rate:.1%}, "
+                f"avg_improvement={avg_improvement:.2%} < {criteria.slow_improvement_threshold:.2%}, "
+                f"no_improvement_streak={no_improvement_streak}"
+            ),
+        )
+
+    # 5) 非终止信号：改进缓慢（不终止，但建议切换/增强策略）
+    if (
+        current_iteration >= criteria.min_iterations_for_slow_improvement
+        and avg_improvement < criteria.slow_improvement_threshold
+    ):
+        return (
+            None,
+            (
+                f"改进缓慢: avg_improvement={avg_improvement:.2%} < {criteria.slow_improvement_threshold:.2%} "
+                f"&& current_iteration={current_iteration} >= {criteria.min_iterations_for_slow_improvement}（建议切换/增强策略，但继续迭代）"
+            ),
+        )
+
     return (None, "继续迭代")
 ```
 
 #### 3.4.3 多种终止条件定义
 
-| 终止条件 | 判定规则 | 动作 | 典型场景 |
-|---------|---------|------|---------|
-| **SUCCESS** | 通过率 ≥ 目标 && 连续 2 次迭代稳定（方差 ≤ 2%） | 转移到终止状态 | 目标用例全部通过，结果稳定 |
-| **CONVERGED_WITH_IMPROVEMENT** | 通过率未达目标 && 平均改进度 < 5% && 已迭代 ≥ 5 次 | 转移到终止状态（带警告） | 已改进至最优但未达目标，人工评估后可接受 |
-| **PLATEAUED** | 平均改进度 < 1% && 已迭代 ≥ 7 次 | 转移到终止状态或等待人工介入 | 改进停滞，可能需要调整策略 |
-| **FAILURE** | 失败率 > 70% && 连续 2 次迭代无改进 | 转移到终止状态 | 持续失败，当前策略无效 |
-| **TIMEOUT** | 迭代次数 > max_iterations | 转移到终止状态 | 达到最大迭代限制 |
+| 终止条件 | 判定规则（量化） | LangGraph动作 | 典型场景 |
+|---------|--------------|-------------|---------|
+| **SUCCESS** | `pass_rate >= target_pass_rate` && 最近 `stable_iterations_required=2` 次稳定（`|Δpass_rate| <= stability_delta_threshold`） | 进入 `END`（成功） | 达到目标且结果稳定 |
+| **CONVERGED_WITH_IMPROVEMENT** | `pass_rate < target_pass_rate` 且：当前 `pass_count` 为历史最优 && 连续 `2` 次无改进 && 最近 `avg_improvement_window=3` 平均改进度 `< 5%` && `iteration >= 5` | 进入 `END`（成功但带 warning）或转人工确认 | 已到当前策略可达的最优点，但未达目标 |
+| **PLATEAUED** | 最近 `avg_improvement_window=3` 平均改进度 `< 1%` && `iteration >= 7` | 进入 `END`（ABORT/需人工介入） | 平台期，需换思路/补证据 |
+| **FAILURE** | 任一满足：A) 失败率连续 `3` 次 `> 70%`；或 B) `failure_rate > 70%` && 连续 `2` 次无改进 | 进入 `END`（失败） | 长期高失败且无改善趋势 |
+| **TIMEOUT** | `current_iteration >= max_iterations`（继续将导致 `iteration_index > max_iterations`） | 进入 `END`（失败/中止） | 达到迭代上限，防止死循环 |
+
+**非终止信号：**
+
+| 信号 | 判定规则 | 说明 |
+|------|---------|------|
+| **SLOW_IMPROVEMENT（改进缓慢）** | 最近 `avg_improvement_window=3` 平均改进度 `< 5%` && `iteration >= 5` | 不终止；建议切换/增强策略（扩大搜索、引入诊断用例、降低修改步长等） |
 
 #### 3.4.4 示例计算
 
-**示例 1：成功收敛场景**
+**示例 1：5 次迭代成功收敛（目标 + 连续稳定）**
 
-| 迭代 | 总用例 | 通过用例 | 通过率 | 改进度 | 备注 |
-|-----|--------|---------|--------|--------|------|
+设：`target_pass_rate=100%`，`stability_delta_threshold=2%`。
+
+| 迭代 | 总用例 | 通过用例 | 通过率 | improvement_rate（Δpass/prev_total） | stability_delta（|Δpass_rate|） |
+|-----|--------|---------|--------|-------------------------------------|------------------------------|
+| 1 | 100 | 80 | 80% | - | - |
+| 2 | 100 | 90 | 90% | +10% | 10% |
+| 3 | 100 | 97 | 97% | +7% | 7% |
+| 4 | 100 | 100 | 100% | +3% | 3% |
+| 5 | 100 | 100 | 100% | +0% | 0% |
+
+在迭代 5：
+- 通过率达到目标：`100% >= 100%`
+- 最近两次迭代稳定：`|100% - 100%| = 0% <= 2%`
+
+判定：**SUCCESS**。
+
+---
+
+**示例 2：CONVERGED_WITH_IMPROVEMENT（未达目标但已到当前策略最优点）**
+
+| 迭代 | 总用例 | 通过用例 | 通过率 | improvement_rate | 备注 |
+|-----|--------|---------|--------|------------------|------|
 | 1 | 100 | 60 | 60% | - | 基准 |
-| 2 | 100 | 75 | 75% | +15% | 显著改进 |
-| 3 | 100 | 85 | 85% | +10% | 持续改进 |
-| 4 | 100 | 92 | 92% | +7% | 接近目标 |
-| 5 | 100 | 95 | 95% | +3% | 接近目标 |
+| 2 | 100 | 75 | 75% | +15% | 改进 |
+| 3 | 100 | 82 | 82% | +7% | 改进 |
+| 4 | 100 | 82 | 82% | +0% | 无改进 |
+| 5 | 100 | 82 | 82% | +0% | 连续无改进 |
 
-收敛判定（迭代 5）：
-- 通过率 95% 未达目标 100%
-- 平均改进度（最近3次）：(7% + 10% + 3%) / 3 = 6.67% > 5%
-- 判定结果：继续迭代
+在迭代 5：
+- 当前通过用例数为历史最优且连续 2 次无改进
+- 最近 3 次平均改进度 `(7% + 0% + 0%) / 3 = 2.33% < 5%`
 
-| 迭代 | 总用例 | 通过用例 | 通过率 | 改进度 | 备注 |
-|-----|--------|---------|--------|--------|------|
-| 6 | 100 | 98 | 98% | +3% | 接近目标 |
-| 7 | 100 | 100 | 100% | +2% | 达到目标 |
+判定：**CONVERGED_WITH_IMPROVEMENT**（终止并输出 warning/人工确认）。
 
-收敛判定（迭代 7）：
-- 通过率 100% ≥ 目标 100% ✓
-- 连续 2 次迭代稳定（迭代 6: 98%, 迭代 7: 100%, 方差 ≈ 0.0002 < 2%） ✓
-- 判定结果：**SUCCESS**
+---
 
-**示例 2：平台期场景**
+**示例 3：FAILURE（失败率连续 3 次超过阈值）**
 
-| 迭代 | 总用例 | 通过用例 | 通过率 | 改进度 | 备注 |
-|-----|--------|---------|--------|--------|------|
-| 1 | 100 | 50 | 50% | - | 基准 |
-| 2 | 100 | 60 | 60% | +10% | 改进 |
-| 3 | 100 | 65 | 65% | +5% | 改进 |
-| 4 | 100 | 68 | 68% | +3% | 改进 |
-| 5 | 100 | 70 | 70% | +2% | 改进 |
-| 6 | 100 | 71 | 71% | +1% | 改进缓慢 |
-| 7 | 100 | 71 | 71% | +0% | 无改进 |
+| 迭代 | 总用例 | 通过用例 | 通过率 | 失败率 |
+|-----|--------|---------|--------|-------|
+| 1 | 100 | 25 | 25% | 75% |
+| 2 | 100 | 28 | 28% | 72% |
+| 3 | 100 | 29 | 29% | 71% |
 
-收敛判定（迭代 7）：
-- 通过率 71% 未达目标 100%
-- 平均改进度（最近3次）：(2% + 1% + 0%) / 3 = 1% < 1%
-- 已迭代 7 次 ≥ 7 次 ✓
-- 判定结果：**PLATEAUED**（建议人工介入）
+在迭代 3：失败率连续 3 次 `> 70%` → **FAILURE**。
 
-**示例 3：失败场景**
+---
 
-| 迭代 | 总用例 | 通过用例 | 通过率 | 改进度 | 备注 |
-|-----|--------|---------|--------|--------|------|
-| 1 | 100 | 20 | 20% | - | 基准 |
-| 2 | 100 | 25 | 25% | +5% | 改进 |
-| 3 | 100 | 22 | 22% | -3% | 回退 |
-| 4 | 100 | 23 | 23% | +1% | 改进微小 |
+**示例 4：PLATEAUED（平台期，建议人工介入）**
 
-收敛判定（迭代 4）：
-- 失败率 77% > 70% ✓
-- 连续 2 次迭代无改进（迭代 3: -3%, 迭代 4: +1%，均 < 5%） ✓
-- 判定结果：**FAILURE**
+| 迭代 | 总用例 | 通过用例 | 通过率 | improvement_rate |
+|-----|--------|---------|--------|------------------|
+| 1 | 100 | 50 | 50% | - |
+| 2 | 100 | 60 | 60% | +10% |
+| 3 | 100 | 66 | 66% | +6% |
+| 4 | 100 | 69 | 69% | +3% |
+| 5 | 100 | 70 | 70% | +1% |
+| 6 | 100 | 71 | 71% | +1% |
+| 7 | 100 | 71 | 71% | +0% |
+
+在迭代 7：最近 3 次平均改进度 `(1% + 1% + 0%) / 3 = 0.67% < 1%` 且已迭代 >= 7 → **PLATEAUED**。
+
+---
+
+##### 3.4.4.1 不同收敛场景的判定流程（决策树）
+
+```mermaid
+flowchart TD
+    A[convergence_check] --> B{current_iteration >= max_iterations?}
+    B -->|是| T[TIMEOUT]
+    B -->|否| C{pass_rate >= target && stable(last2)?}
+
+    C -->|是| S[SUCCESS]
+    C -->|否| D{high_failure_streak >= 3?}
+
+    D -->|是| F1[FAILURE]
+    D -->|否| E{failure_rate > 70% && no_improvement_streak >= 2?}
+
+    E -->|是| F2[FAILURE]
+    E -->|否| P{iteration>=7 && avg_improvement<1%?}
+
+    P -->|是| PL[PLATEAUED]
+    P -->|否| I{iteration>=5 && best_so_far && no_improvement_streak>=2 && avg_improvement<5%?}
+
+    I -->|是| CI[CONVERGED_WITH_IMPROVEMENT]
+    I -->|否| G{iteration>=5 && avg_improvement<5%?}
+
+    G -->|是| H[继续迭代 + 标记“改进缓慢”】【策略切换】]
+    G -->|否| N[继续迭代]
+```
 
 ### 3.5 LangGraph实现示例
 
@@ -509,9 +621,9 @@ def convergence_check_node(state: State) -> State:
 ### 3.6 收敛判定的关键设计原则
 
 1. **防止无限循环**：通过 max_iterations 参数强制终止
-2. **避免过早终止**：通过 min_iterations_for_slow_improvement 确保给予足够的改进机会
-3. **识别平台期**：通过 plateau_improvement_threshold 识别改进停滞
-4. **保证稳定性**：通过 stability_variance_threshold 确保收敛结果的稳定性
+2. **避免过早终止**：先判定“改进缓慢”（`slow_improvement_threshold` + `min_iterations_for_slow_improvement`），仅作为策略切换信号，不直接终止
+3. **识别平台期**：通过 plateau_improvement_threshold + min_iterations_for_plateau 识别改进停滞（建议人工介入）
+4. **保证稳定性**：通过 `stability_delta_threshold`（相邻迭代通过率差异）确保收敛结果稳定，避免“刚达标就退出”
 5. **可配置性**：所有阈值参数均可根据实际场景调整
 6. **可追溯性**：decision_trace 记录每次判定决策的完整信息
 
