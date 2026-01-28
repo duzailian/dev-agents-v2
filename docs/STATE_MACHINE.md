@@ -173,7 +173,7 @@ stateDiagram-v2
 
 ```mermaid
 flowchart TD
-    E[Error 발생/Exception] --> C{错误分类}
+    E[错误发生/异常] --> C{错误分类}
     C -->|编译/链接| B1[重试构建: 清理缓存/切换配置]
     C -->|测试环境| T1[重连/重启QEMU/重置板卡]
     C -->|测试用例失败| A1[回到分析: 生成新补丁]
@@ -356,8 +356,361 @@ flowchart TD
 
 ---
 
-## 6. 循环控制机制
+## 6. 循环控制机制与实现伪代码
 
-> 说明：本节之后（错误恢复流程、伪代码示例等）为本文关键内容的一部分。
-> 若你在阅读时发现文档在此处意外截断，请以仓库最新版本为准。
+### 6.1 核心控制逻辑伪代码
+
+以下伪代码描述了基于状态机的自动化闭环控制逻辑，实际实现建议采用 LangGraph。
+
+```python
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Literal
+
+TerminalState = Literal["SUCCESS", "FAILURE", "ABORTED"]
+
+
+@dataclass
+class TaskRequest:
+    goal: str
+    repo_path: str
+    test_profile: Dict[str, Any]
+    constraints: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Decision:
+    # status 用于表达“本轮测试结果判定”
+    status: Literal["PASS", "FAIL", "FLAKY", "ENV_ERROR", "INCONCLUSIVE"]
+    next_action: Literal["CONTINUE", "RETRY", "ROLLBACK", "ABORT"]
+    confidence: float
+    reasoning: str = ""
+
+
+@dataclass
+class ErrorState:
+    type: str
+    retry_count: int = 0
+    last_failed_state: Optional[str] = None
+    last_exception: Optional[Exception] = None
+
+
+@dataclass
+class OrchestratorContext:
+    task_request: TaskRequest
+
+    iteration_index: int = 1
+    max_iterations: int = 10
+
+    abort_signal: bool = False
+    abort_reason: Optional[str] = None
+
+    repo_snapshot: Dict[str, Any] = field(default_factory=dict)
+
+    analysis: Optional[Dict[str, Any]] = None
+    patch_plan: Optional[Dict[str, Any]] = None
+
+    build_result: Optional[Dict[str, Any]] = None
+
+    test_session: Optional[Any] = None
+    raw_logs: Optional[List[str]] = None
+    test_result: Optional[Dict[str, Any]] = None
+
+    decision: Optional[Decision] = None
+
+    error_state: Optional[ErrorState] = None
+    last_error: Optional[Exception] = None
+
+    decision_trace: List[Dict[str, Any]] = field(default_factory=list)
+
+
+class StateMachineOrchestrator:
+    async def run_task(self, task_request: TaskRequest):
+        # 说明：IDLE 通常由外部调度器/队列控制。
+        # 这里为了覆盖完整状态集合，在 run_task 内部显式展示 IDLE → INIT。
+
+        context = OrchestratorContext(
+            task_request=task_request,
+            max_iterations=task_request.constraints.get("max_iterations", 10),
+        )
+
+        current_state: str = "IDLE"
+
+        while current_state not in ["SUCCESS", "FAILURE", "ABORTED"]:
+            if context.abort_signal:
+                self.log_transition(
+                    from_state=current_state,
+                    to_state="ABORTED",
+                    reason=f"abort_signal: {context.abort_reason}",
+                    context=context,
+                )
+                current_state = "ABORTED"
+                break
+
+            from_state = current_state
+
+            try:
+                next_state, reason = await self.step(from_state, context)
+            except Exception as e:
+                context.last_error = e
+                context.error_state = ErrorState(
+                    type="UNHANDLED_EXCEPTION",
+                    retry_count=0,
+                    last_failed_state=from_state,
+                    last_exception=e,
+                )
+                next_state = "ERROR_RECOVERY"
+                reason = f"exception in {from_state}: {e}"
+
+            self.log_transition(
+                from_state=from_state,
+                to_state=next_state,
+                reason=reason,
+                context=context,
+            )
+            current_state = next_state
+
+        return await self.finalize(context, current_state)
+
+    async def step(self, state: str, context: OrchestratorContext) -> tuple[str, str]:
+        # 这部分逻辑可直接映射到 LangGraph：
+        # - 每个 state 对应一个 node
+        # - 返回的 next_state 对应 edge
+        # - context 即 LangGraph 的共享 state
+
+        if state == "IDLE":
+            return "INIT", "on task_request"
+
+        if state == "INIT":
+            # 初始化：加载配置、校验环境、获取 repo 并建立 baseline
+            await self.load_config(context)
+            await self.validate_environment(context)
+            await self.setup_repository(context)
+            context.repo_snapshot = await self.create_snapshot()
+            context.iteration_index = 1
+            return "CODE_ANALYSIS", "context ready"
+
+        if state == "CODE_ANALYSIS":
+            # CodeAgent 可视作对 CodeAnalyzer + CodeModifier 的封装
+            analysis = await agents.code_agent.process(
+                Task(
+                    type="analyze_code",
+                    input={
+                        "task": context.task_request.goal,
+                        "repo_snapshot": context.repo_snapshot,
+                        "iteration_index": context.iteration_index,
+                        "previous_test_result": context.test_result,
+                        "previous_build_result": context.build_result,
+                    },
+                )
+            )
+            context.analysis = analysis
+
+            if analysis.ok and analysis.confidence >= 0.5:
+                return "PATCH_GENERATION", "analysis ok"
+
+            context.last_error = ValueError("analysis failed or low confidence")
+            context.error_state = ErrorState(type="ANALYSIS_FAILURE", last_failed_state=state)
+            return "ERROR_RECOVERY", "analysis failed"
+
+        if state == "PATCH_GENERATION":
+            patch_plan = await agents.code_agent.process(
+                Task(
+                    type="generate_patch",
+                    input={
+                        "analysis": context.analysis,
+                        "constraints": context.task_request.constraints,
+                    },
+                )
+            )
+            context.patch_plan = patch_plan
+
+            if patch_plan.valid:
+                return "PATCH_APPLY", "patch generated"
+
+            context.last_error = ValueError("patch invalid")
+            context.error_state = ErrorState(type="POLICY_VIOLATION", last_failed_state=state)
+            return "ERROR_RECOVERY", "patch invalid"
+
+        if state == "PATCH_APPLY":
+            # 应用补丁并创建回滚点
+            await self.workspace.create_rollback_point()
+            success = await self.workspace.apply_patch(context.patch_plan)
+            if success:
+                return "BUILD_SETUP", "patch applied"
+
+            context.last_error = RuntimeError("patch apply failed")
+            context.error_state = ErrorState(type="PATCH_APPLY_FAILURE", last_failed_state=state)
+            return "ERROR_RECOVERY", "patch apply failed"
+
+        if state == "BUILD_SETUP":
+            # 构建前准备（依赖、工具链、配置）
+            await self.install_dependencies(context)
+            await self.setup_toolchain(context)
+            await self.configure_build(context)
+            return "BUILD_RUN", "build env ready"
+
+        if state == "BUILD_RUN":
+            build_result = await self.executor.run_build()
+            context.build_result = build_result
+
+            if build_result.success:
+                return "TEST_SETUP", "build ok"
+
+            context.last_error = RuntimeError(f"build failed: {build_result.error}")
+            context.error_state = ErrorState(type="BUILD_FAILURE", last_failed_state=state)
+            return "ERROR_RECOVERY", "build failed"
+
+        if state == "TEST_SETUP":
+            # 测试环境准备（QEMU/板卡/脚本）
+            env = await self.test_env_manager.setup(
+                env_type=context.task_request.test_profile["env_type"],
+                artifacts=context.build_result.artifacts,
+            )
+            health = await env.health_check()
+            if not health.ok:
+                context.last_error = RuntimeError("test env health check failed")
+                context.error_state = ErrorState(type="TEST_ENV_FAILURE", last_failed_state=state)
+                return "ERROR_RECOVERY", "env failed"
+
+            context.test_session = env
+            return "TEST_RUN", "env ready"
+
+        if state == "TEST_RUN":
+            # TestAgent 负责调用 TestOrchestrator（详见 DETAILED_DESIGN_V2.md 1.3）
+            raw = await agents.test_agent.process(
+                Task(
+                    type="run_test",
+                    input={
+                        "session": context.test_session,
+                        "test_profile": context.task_request.test_profile,
+                    },
+                )
+            )
+            context.raw_logs = raw.logs
+            return "RESULT_COLLECTION", "test finished"
+
+        if state == "RESULT_COLLECTION":
+            # 采集：补齐日志/崩溃转储/报告等，并结构化归一
+            logs = await context.test_session.fetch_logs()
+            artifacts = await context.test_session.fetch_artifacts()
+            context.test_result = await self.result_collector.normalize(
+                raw_logs=context.raw_logs,
+                fetched_logs=logs,
+                artifacts=artifacts,
+            )
+            return "RESULT_ANALYSIS", "result normalized"
+
+        if state == "RESULT_ANALYSIS":
+            # AnalysisAgent 内部可调用 ResultAnalyzer（详见 DETAILED_DESIGN_V2.md 1.4）
+            decision = await agents.analysis_agent.process(
+                Task(
+                    type="analyze_result",
+                    input={
+                        "test_result": context.test_result,
+                        "analysis": context.analysis,
+                        "iteration_index": context.iteration_index,
+                    },
+                )
+            )
+
+            if not decision.valid:
+                context.last_error = ValueError("decision invalid")
+                context.error_state = ErrorState(type="MODEL_FAILURE", last_failed_state=state)
+                return "ERROR_RECOVERY", "decision failed"
+
+            context.decision = Decision(
+                status=decision.status,
+                next_action=decision.next_action,
+                confidence=decision.confidence,
+                reasoning=decision.reasoning,
+            )
+            return "CONVERGENCE_CHECK", "decision produced"
+
+        if state == "CONVERGENCE_CHECK":
+            if context.decision.next_action == "ABORT":
+                context.abort_reason = context.decision.reasoning
+                return "ABORTED", "decision abort"
+
+            if context.decision.status == "PASS" and context.decision.confidence >= 0.8:
+                return "SUCCESS", "converged"
+
+            if context.iteration_index >= context.max_iterations:
+                context.last_error = RuntimeError("max_iterations reached")
+                return "FAILURE", "max_iterations reached"
+
+            # 继续迭代
+            context.iteration_index += 1
+            await self.save_iteration_to_kb(context)
+            return "CODE_ANALYSIS", "continue next iteration"
+
+        if state == "ERROR_RECOVERY":
+            # 错误恢复：分类 → 重试/回滚/降级 → 返回可继续状态或 FAILURE
+            error_type = (context.error_state.type if context.error_state else "UNKNOWN")
+
+            retry_count = context.error_state.retry_count if context.error_state else 0
+            if context.error_state:
+                context.error_state.retry_count += 1
+
+            if retry_count >= 3:
+                return "FAILURE", f"unrecoverable after retries: {error_type}"
+
+            if error_type in ["BUILD_FAILURE"]:
+                await self.clean_build_cache()
+                return "BUILD_RUN", "retry build"
+
+            if error_type in ["TEST_ENV_FAILURE"]:
+                await self.reset_test_environment(context)
+                return "TEST_SETUP", "retry env setup"
+
+            if error_type in ["ARTIFACT_MISSING"]:
+                return "RESULT_COLLECTION", "re-collect artifacts"
+
+            if error_type in ["ANALYSIS_FAILURE", "MODEL_FAILURE"]:
+                context.task_request.constraints["analysis_mode"] = "fallback"
+                return "CODE_ANALYSIS", "fallback analysis"
+
+            # 默认：回滚后回到分析
+            if await self.can_rollback(context):
+                await self.workspace.rollback()
+                return "CODE_ANALYSIS", "rollback and re-analyze"
+
+            return "FAILURE", f"unknown error and cannot rollback: {error_type}"
+
+        raise RuntimeError(f"unknown state: {state}")
+
+    def log_transition(self, from_state: str, to_state: str, reason: str, context: OrchestratorContext):
+        context.decision_trace.append(
+            {
+                "from": from_state,
+                "to": to_state,
+                "reason": reason,
+                "iteration_index": context.iteration_index,
+            }
+        )
+
+    async def finalize(self, context: OrchestratorContext, terminal_state: TerminalState):
+        # 终态统一收敛：生成最终报告 + 可选入库
+        report = {
+            "final_status": terminal_state,
+            "iterations": context.iteration_index,
+            "goal": context.task_request.goal,
+            "artifacts": {
+                "repo_snapshot": context.repo_snapshot,
+                "build_result": context.build_result,
+                "test_result": context.test_result,
+                "patch_plan": context.patch_plan,
+            },
+            "decision_trace": context.decision_trace,
+            "last_error": str(context.last_error) if context.last_error else None,
+            "abort_reason": context.abort_reason,
+        }
+
+        # 可选：交给 KBAgent 做知识沉淀
+        await agents.kb_agent.process(Task(type="store_run", input=report))
+        return report
+```
+
+---
+
+> 说明：本设计旨在为 Phase 2 提供清晰的逻辑指导。实现时可利用 LangGraph 的 `StateGraph` 对上述逻辑进行节点（Nodes）与边（Edges）的定义。
 
