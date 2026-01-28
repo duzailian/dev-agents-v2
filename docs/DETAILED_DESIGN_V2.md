@@ -552,6 +552,1986 @@ class TestOrchestrator:
 - 提供统一的日志和指标收集
 - 支持测试用例的优先级和依赖关系管理
 
+#### 1.3.1 TestEnvironment基类设计
+
+为统一不同测试环境（QEMU、目标板、BMC等）的管理，TestOrchestrator定义了通用的环境抽象基类，确保所有环境具有标准化的生命周期管理和健康检查机制。
+
+**统一基类接口定义**：
+```python
+from abc import ABC, abstractmethod
+from enum import Enum
+from typing import Dict, Any, Optional, List
+from dataclasses import dataclass
+import asyncio
+
+class EnvironmentState(Enum):
+    """环境状态枚举"""
+    INITIALIZED = "initialized"      # 初始化完成
+    SETTING_UP = "setting_up"        # 环境准备中
+    READY = "ready"                  # 环境就绪
+    RUNNING = "running"              # 测试执行中
+    CLEANING = "cleaning"            # 清理中
+    ERROR = "error"                  # 错误状态
+    UNHEALTHY = "unhealthy"          # 不健康状态
+
+class HealthStatus(Enum):
+    """健康状态枚举"""
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
+@dataclass
+class EnvironmentConfig:
+    """环境配置数据模型"""
+    env_id: str
+    env_type: EnvironmentType
+    timeout: int = 300
+    retry_count: int = 3
+    health_check_interval: int = 30
+    log_level: str = "INFO"
+    resource_constraints: Dict[str, Any] = None
+
+@dataclass
+class HealthCheckResult:
+    """健康检查结果"""
+    status: HealthStatus
+    checks: Dict[str, bool]
+    metrics: Dict[str, float]
+    message: Optional[str] = None
+    timestamp: Optional[datetime] = None
+
+@dataclass
+class LogSource:
+    """日志源定义"""
+    name: str
+    path: str
+    type: str  # stdout, stderr, file, serial, network
+    format: str = "text"  # text, json, binary
+
+class TestEnvironment(ABC):
+    """测试环境抽象基类 - 统一接口规范"""
+    
+    def __init__(self, config: EnvironmentConfig):
+        self.config = config
+        self.env_id = config.env_id
+        self.env_type = config.env_type
+        self.state = EnvironmentState.INITIALIZED
+        self.log_collector = LogCollector(config)
+        self.metrics_collector = MetricsCollector(config)
+        self._health_check_task: Optional[asyncio.Task] = None
+        self._last_health_result: Optional[HealthCheckResult] = None
+        self._lock = asyncio.Lock()
+        self._active_tests = 0
+        
+    # ==================== 生命周期管理 ====================
+    
+    async def setup(self) -> bool:
+        """
+        环境准备 - 初始化必要资源和配置
+        返回: 准备是否成功
+        """
+        async with self._lock:
+            if self.state != EnvironmentState.INITIALIZED:
+                raise RuntimeError(f"Cannot setup from state: {self.state}")
+            
+            self.state = EnvironmentState.SETTING_UP
+            try:
+                success = await self._setup_internal()
+                if success:
+                    self.state = EnvironmentState.READY
+                    # 启动健康检查任务
+                    self._health_check_task = asyncio.create_task(self._health_check_loop())
+                else:
+                    self.state = EnvironmentState.ERROR
+                return success
+            except Exception as e:
+                self.state = EnvironmentState.ERROR
+                await self.log_collector.collect_log("setup", f"Setup failed: {str(e)}", "ERROR")
+                return False
+    
+    @abstractmethod
+    async def _setup_internal(self) -> bool:
+        """子类实现具体的环境准备逻辑"""
+        pass
+    
+    async def start(self) -> bool:
+        """
+        启动环境 - 实际启动目标环境
+        返回: 启动是否成功
+        """
+        async with self._lock:
+            if self.state not in [EnvironmentState.READY, EnvironmentState.CLEANING]:
+                raise RuntimeError(f"Cannot start from state: {self.state}")
+            
+            try:
+                success = await self._start_internal()
+                if success:
+                    self.state = EnvironmentState.RUNNING
+                    await self.log_collector.collect_log("start", "Environment started successfully", "INFO")
+                return success
+            except Exception as e:
+                self.state = EnvironmentState.ERROR
+                await self.log_collector.collect_log("start", f"Start failed: {str(e)}", "ERROR")
+                return False
+    
+    @abstractmethod
+    async def _start_internal(self) -> bool:
+        """子类实现具体的环境启动逻辑"""
+        pass
+    
+    async def execute_test(self, test_case: TestCase) -> TestResult:
+        """
+        执行测试 - 在环境中运行测试用例
+        返回: 测试结果
+        """
+        if self.state != EnvironmentState.RUNNING:
+            raise RuntimeError(f"Cannot execute test in state: {self.state}")
+        
+        async with self._lock:
+            self._active_tests += 1
+        
+        try:
+            # 启动前健康检查
+            health_result = await self.health_check()
+            if health_result.status != HealthStatus.HEALTHY:
+                await self.log_collector.collect_log(
+                    "test", 
+                    f"Skipping test due to unhealthy environment: {health_result.message}", 
+                    "WARNING"
+                )
+                return TestResult(
+                    result_id=f"{test_case.case_id}_skipped",
+                    case_id=test_case.case_id,
+                    status=TestStatus.SKIPPED,
+                    output="",
+                    error_output=f"Unhealthy environment: {health_result.message}",
+                    execution_time=0.0,
+                    artifacts=[]
+                )
+            
+            result = await self._execute_test_internal(test_case)
+            return result
+        finally:
+            async with self._lock:
+                self._active_tests -= 1
+    
+    @abstractmethod
+    async def _execute_test_internal(self, test_case: TestCase) -> TestResult:
+        """子类实现具体的测试执行逻辑"""
+        pass
+    
+    async def cleanup(self) -> bool:
+        """
+        环境清理 - 释放资源和执行清理操作
+        返回: 清理是否成功
+        """
+        async with self._lock:
+            if self._health_check_task:
+                self._health_check_task.cancel()
+                self._health_check_task = None
+            
+            self.state = EnvironmentState.CLEANING
+            try:
+                success = await self._cleanup_internal()
+                self.state = EnvironmentState.INITIALIZED if success else EnvironmentState.ERROR
+                await self.log_collector.collect_log("cleanup", "Environment cleanup completed", "INFO")
+                return success
+            except Exception as e:
+                self.state = EnvironmentState.ERROR
+                await self.log_collector.collect_log("cleanup", f"Cleanup failed: {str(e)}", "ERROR")
+                return False
+    
+    @abstractmethod
+    async def _cleanup_internal(self) -> bool:
+        """子类实现具体的环境清理逻辑"""
+        pass
+    
+    # ==================== 健康检查与恢复 ====================
+    
+    async def health_check(self) -> HealthCheckResult:
+        """
+        同步健康检查 - 立即执行一次健康检查
+        返回: 健康检查结果
+        """
+        try:
+            result = await self._perform_health_checks()
+            self._last_health_result = result
+            
+            if result.status != HealthStatus.HEALTHY:
+                async with self._lock:
+                    self.state = EnvironmentState.UNHEALTHY
+            
+            return result
+        except Exception as e:
+            await self.log_collector.collect_log("health_check", f"Health check failed: {str(e)}", "ERROR")
+            return HealthCheckResult(
+                status=HealthStatus.UNKNOWN,
+                checks={},
+                metrics={},
+                message=f"Health check exception: {str(e)}"
+            )
+    
+    @abstractmethod
+    async def _perform_health_checks(self) -> HealthCheckResult:
+        """
+        子类实现具体的健康检查逻辑
+        应包含多个检查项（CPU、内存、连接状态等）
+        """
+        pass
+    
+    async def _health_check_loop(self):
+        """后台健康检查循环"""
+        while True:
+            try:
+                if self.state in [EnvironmentState.READY, EnvironmentState.RUNNING]:
+                    await self.health_check()
+                await asyncio.sleep(self.config.health_check_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                await self.log_collector.collect_log("health_check", f"Health check loop error: {str(e)}", "ERROR")
+    
+    async def recover_from_failure(self, failure_info: Dict[str, Any]) -> bool:
+        """
+        故障恢复 - 自动尝试从故障状态中恢复
+        返回: 恢复是否成功
+        """
+        async with self._lock:
+            if self.state not in [EnvironmentState.ERROR, EnvironmentState.UNHEALTHY]:
+                return True  # 无需恢复
+            
+            await self.log_collector.collect_log("recovery", f"Attempting recovery from {self.state}", "INFO")
+            
+            try:
+                success = await self._recover_internal(failure_info)
+                if success:
+                    self.state = EnvironmentState.READY
+                    await self.log_collector.collect_log("recovery", "Recovery successful", "INFO")
+                return success
+            except Exception as e:
+                await self.log_collector.collect_log("recovery", f"Recovery failed: {str(e)}", "ERROR")
+                return False
+    
+    async def _recover_internal(self, failure_info: Dict[str, Any]) -> bool:
+        """
+        子类实现具体的故障恢复逻辑
+        默认实现：cleanup -> setup -> start
+        """
+        try:
+            await self.cleanup()
+            await self.setup()
+            return await self.start()
+        except Exception:
+            return False
+    
+    async def wait_until_ready(self, timeout: Optional[int] = None) -> bool:
+        """
+        等待环境就绪
+        返回: 是否在指定时间内就绪
+        """
+        timeout = timeout or self.config.timeout
+        start_time = asyncio.get_event_loop().time()
+        
+        while asyncio.get_event_loop().time() - start_time < timeout:
+            if self.state == EnvironmentState.RUNNING:
+                health = await self.health_check()
+                if health.status == HealthStatus.HEALTHY:
+                    return True
+            elif self.state in [EnvironmentState.ERROR, EnvironmentState.UNHEALTHY]:
+                return False
+            await asyncio.sleep(1)
+        
+        return False
+    
+    def get_status(self) -> Dict[str, Any]:
+        """获取环境状态信息"""
+        return {
+            "env_id": self.env_id,
+            "env_type": self.env_type.value,
+            "state": self.state.value,
+            "active_tests": self._active_tests,
+            "health_status": self._last_health_result.status.value if self._last_health_result else "unknown",
+            "config": {
+                "timeout": self.config.timeout,
+                "retry_count": self.config.retry_count,
+                "health_check_interval": self.config.health_check_interval
+            }
+        }
+
+#### 1.3.2 QEMU适配器实现规范
+
+QEMU环境适配器实现了TestEnvironment基类，提供对QEMU虚拟化环境的完整支持，包括镜像管理、启动参数配置、日志采集和性能监控。
+
+**QEMU环境配置模型**：
+```python
+@dataclass
+class QEMUConfig:
+    """QEMU配置数据模型"""
+    qemu_binary: str = "qemu-system-x86_64"
+    machine_type: str = "pc"
+    cpu_model: str = "host"
+    memory_size: str = "4G"
+    
+    # 镜像配置
+    disk_image: str = None
+    disk_format: str = "qcow2"
+    snapshot_mode: bool = True
+    
+    # 网络配置
+    network_mode: str = "user"  # user, tap, bridge
+    host_forward_ports: List[Dict[str, int]] = None
+    
+    # 启动配置
+    boot_command: str = None
+    kernel_image: str = None
+    initrd_image: str = None
+    
+    # 监控接口
+    monitor_port: int = 4444
+    qmp_socket: str = None  # QMP (QEMU Monitor Protocol)
+    
+    # 日志配置
+    qemu_log_file: str = None
+    serial_log_file: str = None
+
+class QEMUEnvironment(TestEnvironment):
+    """QEMU环境适配器"""
+    
+    def __init__(self, config: EnvironmentConfig, qemu_config: QEMUConfig):
+        super().__init__(config)
+        self.qemu_config = qemu_config
+        self.qemu_process: Optional[asyncio.subprocess.Process] = None
+        self.qmp_connection: Optional[QMPClient] = None
+        self._snapshot_restored = False
+        
+    async def _setup_internal(self) -> bool:
+        """QEMU环境准备"""
+        # 1. 验证QEMU二进制文件存在
+        if not await self._validate_qemu_binary():
+            return False
+        
+        # 2. 验证镜像文件
+        if not await self._validate_disk_image():
+            return False
+        
+        # 3. 初始化QMP客户端
+        if self.qemu_config.qmp_socket:
+            self.qmp_connection = QMPClient(self.qemu_config.qmp_socket)
+        
+        # 4. 配置日志收集
+        await self._setup_log_collection()
+        
+        return True
+    
+    async def _validate_qemu_binary(self) -> bool:
+        """验证QEMU二进制文件"""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.qemu_config.qemu_binary, "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            return proc.returncode == 0
+        except Exception as e:
+            await self.log_collector.collect_log("setup", f"QEMU binary validation failed: {e}", "ERROR")
+            return False
+    
+    async def _validate_disk_image(self) -> bool:
+        """验证磁盘镜像文件"""
+        import os
+        if not os.path.exists(self.qemu_config.disk_image):
+            await self.log_collector.collect_log("setup", f"Disk image not found: {self.qemu_config.disk_image}", "ERROR")
+            return False
+        
+        # 验证镜像格式
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "qemu-img", "info", self.qemu_config.disk_image,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            return proc.returncode == 0
+        except Exception as e:
+            await self.log_collector.collect_log("setup", f"Disk image validation failed: {e}", "ERROR")
+            return False
+    
+    def _build_qemu_command(self) -> List[str]:
+        """构建QEMU启动命令"""
+        cmd = [self.qemu_config.qemu_binary]
+        
+        # 基础配置
+        cmd.extend(["-machine", self.qemu_config.machine_type])
+        cmd.extend(["-cpu", self.qemu_config.cpu_model])
+        cmd.extend(["-m", self.qemu_config.memory_size])
+        
+        # 磁盘配置
+        cmd.extend([
+            "-drive", 
+            f"file={self.qemu_config.disk_image},format={self.qemu_config.disk_format}"
+        ])
+        
+        # 快照模式
+        if self.qemu_config.snapshot_mode:
+            cmd.append("-snapshot")
+        
+        # 网络配置
+        if self.qemu_config.network_mode == "user":
+            cmd.extend(["-net", "user", "-net", "nic"])
+            # 端口转发
+            for forward in (self.qemu_config.host_forward_ports or []):
+                cmd.extend(["-net", f"user,hostfwd=tcp::{forward['host_port']}-:{forward['guest_port']}"])
+        
+        # 串口日志
+        if self.qemu_config.serial_log_file:
+            cmd.extend(["-serial", f"file:{self.qemu_config.serial_log_file}"])
+        
+        # QMP监控
+        if self.qemu_config.qmp_socket:
+            cmd.extend(["-qmp", f"unix:{self.qemu_config.qmp_socket},server,nowait"])
+        
+        # 启动配置
+        if self.qemu_config.kernel_image:
+            cmd.extend(["-kernel", self.qemu_config.kernel_image])
+        if self.qemu_config.initrd_image:
+            cmd.extend(["-initrd", self.qemu_config.initrd_image])
+        if self.qemu_config.boot_command:
+            cmd.extend(["-append", self.qemu_config.boot_command])
+        
+        # 日志输出
+        if self.qemu_config.qemu_log_file:
+            cmd.extend(["-D", self.qemu_config.qemu_log_file])
+        
+        return cmd
+    
+    async def _setup_log_collection(self):
+        """配置日志收集"""
+        log_sources = []
+        
+        if self.qemu_config.qemu_log_file:
+            log_sources.append(LogSource(
+                name="qemu_main",
+                path=self.qemu_config.qemu_log_file,
+                type="file"
+            ))
+        
+        if self.qemu_config.serial_log_file:
+            log_sources.append(LogSource(
+                name="serial_console",
+                path=self.qemu_config.serial_log_file,
+                type="file"
+            ))
+        
+        if self.qemu_config.qmp_socket:
+            log_sources.append(LogSource(
+                name="qmp_events",
+                path=self.qemu_config.qmp_socket,
+                type="network"
+            ))
+        
+        await self.log_collector.register_sources(log_sources)
+    
+    async def _start_internal(self) -> bool:
+        """启动QEMU环境"""
+        cmd = self._build_qemu_command()
+        
+        # 确保日志目录存在
+        import os
+        for log_file in [self.qemu_config.qemu_log_file, self.qemu_config.serial_log_file]:
+            if log_file:
+                os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        
+        try:
+            # 启动QEMU进程
+            self.qemu_process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            await self.log_collector.collect_log("start", f"QEMU started with PID: {self.qemu_process.pid}", "INFO")
+            
+            # 连接QMP
+            if self.qmp_connection:
+                await asyncio.sleep(2)  # 等待QMP启动
+                await self.qmp_connection.connect()
+            
+            # 等待系统启动
+            await asyncio.sleep(10)  # 基础等待时间
+            return True
+            
+        except Exception as e:
+            await self.log_collector.collect_log("start", f"Failed to start QEMU: {e}", "ERROR")
+            return False
+    
+    async def _execute_test_internal(self, test_case: TestCase) -> TestResult:
+        """在QEMU中执行测试"""
+        import time
+        start_time = time.time()
+        
+        # 通过SSH或串口执行测试（示例使用SSH）
+        try:
+            # 这里应实现SSH连接和执行逻辑
+            # 为简化示例，使用直接命令执行
+            proc = await asyncio.create_subprocess_shell(
+                test_case.command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=test_case.environment_vars
+            )
+            
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), 
+                timeout=test_case.timeout
+            )
+            
+            execution_time = time.time() - start_time
+            
+            # 收集输出作为artifact
+            output_file = f"/tmp/test_output_{test_case.case_id}.log"
+            with open(output_file, 'w') as f:
+                f.write(stdout.decode() + "\\n" + stderr.decode())
+            
+            status = TestStatus.PASSED if proc.returncode == 0 else TestStatus.FAILED
+            
+            return TestResult(
+                result_id=f"qemu_{test_case.case_id}_{int(start_time)}",
+                case_id=test_case.case_id,
+                status=status,
+                exit_code=proc.returncode,
+                output=stdout.decode(),
+                error_output=stderr.decode(),
+                execution_time=execution_time,
+                artifacts=[output_file]
+            )
+            
+        except asyncio.TimeoutError:
+            if proc:
+                proc.kill()
+            return TestResult(
+                result_id=f"qemu_{test_case.case_id}_timeout",
+                case_id=test_case.case_id,
+                status=TestStatus.FAILED,
+                exit_code=-1,
+                output="",
+                error_output=f"Test timeout after {test_case.timeout}s",
+                execution_time=test_case.timeout,
+                artifacts=[]
+            )
+    
+    async def _cleanup_internal(self) -> bool:
+        """清理QEMU环境"""
+        try:
+            # 通过QMP发送关机命令
+            if self.qmp_connection:
+                await self.qmp_connection.send_powerdown()
+                await asyncio.sleep(5)
+            
+            # 强制终止进程
+            if self.qemu_process:
+                self.qemu_process.terminate()
+                await asyncio.wait_for(self.qemu_process.wait(), timeout=30)
+            
+            # 清理日志收集
+            await self.log_collector.cleanup()
+            
+            return True
+        except Exception as e:
+            await self.log_collector.collect_log("cleanup", f"Cleanup failed: {e}", "ERROR")
+            return False
+    
+    async def _perform_health_checks(self) -> HealthCheckResult:
+        """执行QEMU健康检查"""
+        checks = {}
+        metrics = {}
+        
+        # 检查1: 进程状态
+        if self.qemu_process:
+            checks["qemu_process_running"] = self.qemu_process.returncode is None
+        else:
+            checks["qemu_process_running"] = False
+        
+        # 检查2: QMP连接状态
+        if self.qmp_connection:
+            checks["qmp_connection"] = await self.qmp_connection.ping()
+        
+        # 检查3: 系统响应（通过SSH或串口）
+        try:
+            # 示例：尝试简单命令
+            proc = await asyncio.create_subprocess_exec(
+                "echo", "ping",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await proc.wait()
+            checks["system_responsive"] = proc.returncode == 0
+        except:
+            checks["system_responsive"] = False
+        
+        # 检查4: 资源使用（通过QMP获取）
+        if self.qmp_connection and checks["qmp_connection"]:
+            metrics.update(await self.qmp_connection.get_system_metrics())
+        
+        # 判断整体状态
+        failed_checks = [k for k, v in checks.items() if not v]
+        if not any(checks.values()):
+            status = HealthStatus.FAILED
+            message = "All health checks failed"
+        elif failed_checks:
+            status = HealthStatus.DEGRADED
+            message = f"Failed checks: {', '.join(failed_checks)}"
+        else:
+            status = HealthStatus.HEALTHY
+            message = "All systems healthy"
+        
+        return HealthCheckResult(
+            status=status,
+            checks=checks,
+            metrics=metrics,
+            message=message
+        )
+
+#### 1.3.3 目标板适配器实现规范
+
+目标板环境适配器支持通过多种接入方式（SSH、BMC、串口）对真实硬件进行测试编排，提供与QEMU一致的统一接口。
+
+**目标板接入方式枚举**：
+```python
+from enum import Enum
+from dataclasses import dataclass
+from typing import Optional, Dict, Any
+
+class BoardAccessType(Enum):
+    """目标板接入方式"""
+    SSH = "ssh"
+    BMC = "bmc"
+    SERIAL = "serial"
+    TELNET = "telnet"
+
+@dataclass
+class BoardConfig:
+    """目标板配置数据模型"""
+    board_id: str
+    board_model: str
+    access_type: BoardAccessType
+    
+    # 通用配置
+    power_control: bool = True  # 是否支持电源控制
+    boot_timeout: int = 300    # 启动超时时间
+    
+    # 资源约束
+    max_concurrent_tests: int = 1
+    exclusive_resources: List[str] = None
+
+@dataclass
+class SSHConfig:
+    """SSH接入配置"""
+    host: str
+    port: int = 22
+    username: str
+    password: Optional[str] = None
+    private_key: Optional[str] = None
+    timeout: int = 30
+    keepalive_interval: int = 60
+
+@dataclass
+class BMCConfig:
+    """BMC接入配置"""
+    bmc_ip: str
+    bmc_username: str
+    bmc_password: str
+    bmc_type: str = "ipmi"  # ipmi, redfish, ssh
+    power_on_command: Optional[str] = None
+    power_off_command: Optional[str] = None
+    reset_command: Optional[str] = None
+
+@dataclass
+class SerialConfig:
+    """串口接入配置"""
+    device_path: str  # /dev/ttyUSB0
+    baudrate: int = 115200
+    bytesize: int = 8
+    parity: str = "N"
+    stopbits: int = 1
+    flow_control: bool = False
+    timeout: int = 10
+
+class BoardEnvironment(TestEnvironment):
+    """目标板环境适配器 - 支持多种接入方式"""
+    
+    def __init__(self, config: EnvironmentConfig, board_config: BoardConfig):
+        super().__init__(config)
+        self.board_config = board_config
+        self.ssh_config: Optional[SSHConfig] = None
+        self.bmc_config: Optional[BMCConfig] = None
+        self.serial_config: Optional[SerialConfig] = None
+        self.ssh_client: Optional[SSHClient] = None
+        self.bmc_client: Optional[BMCClient] = None
+        self.serial_connection: Optional[SerialConnection] = None
+        self._access_client = None
+        
+    def set_access_config(self, access_type: BoardAccessType, config: Any):
+        """设置接入配置"""
+        if access_type == BoardAccessType.SSH:
+            self.ssh_config = config
+        elif access_type == BoardAccessType.BMC:
+            self.bmc_config = config
+        elif access_type == BoardAccessType.SERIAL:
+            self.serial_config = config
+        else:
+            raise ValueError(f"Unsupported access type: {access_type}")
+    
+    async def _setup_internal(self) -> bool:
+        """目标板环境准备"""
+        # 1. 根据接入类型初始化客户端
+        if self.board_config.access_type == BoardAccessType.SSH:
+            if not self.ssh_config:
+                raise ValueError("SSH config not provided")
+            self._access_client = SSHClient(self.ssh_config)
+            
+        elif self.board_config.access_type == BoardAccessType.BMC:
+            if not self.bmc_config:
+                raise ValueError("BMC config not provided")
+            self._access_client = BMCClient(self.bmc_config)
+            
+        elif self.board_config.access_type == BoardAccessType.SERIAL:
+            if not self.serial_config:
+                raise ValueError("Serial config not provided")
+            self._access_client = SerialConnection(self.serial_config)
+        
+        # 2. 配置日志收集
+        await self._setup_board_log_collection()
+        
+        return True
+    
+    async def _setup_board_log_collection(self):
+        """配置目标板日志收集"""
+        log_sources = []
+        
+        # 系统日志（通过接入方式收集）
+        if self.board_config.access_type == BoardAccessType.SSH:
+            log_sources.append(LogSource(
+                name="syslog",
+                path="/var/log/syslog",
+                type="remote_file",
+                format="text"
+            ))
+        elif self.board_config.access_type == BoardAccessType.SERIAL:
+            log_sources.append(LogSource(
+                name="serial_console",
+                path=self.serial_config.device_path,
+                type="serial",
+                format="text"
+            ))
+        
+        # BMC事件日志
+        if self.board_config.access_type == BoardAccessType.BMC:
+            log_sources.append(LogSource(
+                name="bmc_events",
+                path=f"{self.bmc_config.bmc_ip}/events",
+                type="network",
+                format="json"
+            ))
+        
+        await self.log_collector.register_sources(log_sources)
+    
+    async def _start_internal(self) -> bool:
+        """启动目标板环境"""
+        try:
+            # 1. 电源控制（如果支持）
+            if self.board_config.power_control:
+                await self._power_cycle_board()
+            
+            # 2. 等待系统启动
+            await self._wait_for_system_boot()
+            
+            # 3. 建立接入连接
+            if self._access_client:
+                await self._access_client.connect()
+                await self.log_collector.collect_log("start", "Board access client connected", "INFO")
+            
+            return True
+            
+        except Exception as e:
+            await self.log_collector.collect_log("start", f"Board start failed: {e}", "ERROR")
+            return False
+    
+    async def _power_cycle_board(self):
+        """电源循环目标板"""
+        if isinstance(self._access_client, BMCClient):
+            # 通过BMC控制电源
+            await self._access_client.power_off()
+            await asyncio.sleep(5)
+            await self._access_client.power_on()
+        else:
+            # TODO: 实现其他方式的电源控制
+            pass
+    
+    async def _wait_for_system_boot(self):
+        """等待系统启动完成"""
+        boot_timeout = self.board_config.boot_timeout
+        start_time = asyncio.get_event_loop().time()
+        
+        while asyncio.get_event_loop().time() - start_time < boot_timeout:
+            try:
+                if isinstance(self._access_client, SSHClient):
+                    # 尝试SSH连接
+                    result = await self._access_client.execute_command("uptime")
+                    if result.returncode == 0:
+                        await self.log_collector.collect_log("boot", "System boot completed", "INFO")
+                        return
+                elif isinstance(self._access_client, SerialConnection):
+                    # 检查启动完成标志
+                    if await self._access_client.wait_for_pattern("login:", timeout=10):
+                        await self.log_collector.collect_log("boot", "System boot completed", "INFO")
+                        return
+            except:
+                pass
+            
+            await asyncio.sleep(5)
+        
+        raise TimeoutError("Board boot timeout")
+    
+    async def _execute_test_internal(self, test_case: TestCase) -> TestResult:
+        """在目标板执行测试"""
+        import time
+        start_time = time.time()
+        
+        try:
+            if not self._access_client:
+                raise RuntimeError("Access client not available")
+            
+            # 根据接入方式执行测试
+            if isinstance(self._access_client, SSHClient):
+                result = await self._execute_ssh_test(test_case)
+            elif isinstance(self._access_client, BMCClient):
+                result = await self._execute_bmc_test(test_case)
+            elif isinstance(self._access_client, SerialConnection):
+                result = await self._execute_serial_test(test_case)
+            else:
+                raise RuntimeError("Unsupported access client")
+            
+            execution_time = time.time() - start_time
+            result.execution_time = execution_time
+            
+            return result
+            
+        except Exception as e:
+            await self.log_collector.collect_log("test", f"Test execution failed: {e}", "ERROR")
+            return TestResult(
+                result_id=f"board_{test_case.case_id}_error",
+                case_id=test_case.case_id,
+                status=TestStatus.FAILED,
+                exit_code=-1,
+                output="",
+                error_output=str(e),
+                execution_time=0.0,
+                artifacts=[]
+            )
+    
+    async def _execute_ssh_test(self, test_case: TestCase) -> TestResult:
+        """通过SSH执行测试"""
+        result = await self._access_client.execute_command(
+            test_case.command,
+            timeout=test_case.timeout,
+            environment=test_case.environment_vars
+        )
+        
+        return TestResult(
+            result_id=f"ssh_{test_case.case_id}_{int(asyncio.get_event_loop().time())}",
+            case_id=test_case.case_id,
+            status=TestStatus.PASSED if result.returncode == 0 else TestStatus.FAILED,
+            exit_code=result.returncode,
+            output=result.stdout,
+            error_output=result.stderr,
+            execution_time=0.0,
+            artifacts=[result.log_file] if result.log_file else []
+        )
+    
+    async def _execute_serial_test(self, test_case: TestCase) -> TestResult:
+        """通过串口执行测试"""
+        # 发送测试命令
+        await self._access_client.send_command(test_case.command)
+        
+        # 收集输出
+        output = await self._access_client.read_until_timeout(test_case.timeout)
+        
+        # 解析结果（假设输出包含退出码）
+        exit_code = self._parse_exit_code(output)
+        
+        return TestResult(
+            result_id=f"serial_{test_case.case_id}_{int(asyncio.get_event_loop().time())}",
+            case_id=test_case.case_id,
+            status=TestStatus.PASSED if exit_code == 0 else TestStatus.FAILED,
+            exit_code=exit_code,
+            output=output,
+            error_output="",
+            execution_time=0.0,
+            artifacts=[]
+        )
+    
+    async def _execute_bmc_test(self, test_case: TestCase) -> TestResult:
+        """通过BMC执行测试"""
+        # BMC环境下通常使用SOL(Serial-over-LAN)
+        sol_output = await self._access_client.execute_sol_command(
+            test_case.command,
+            timeout=test_case.timeout
+        )
+        
+        exit_code = self._parse_exit_code(sol_output)
+        
+        return TestResult(
+            result_id=f"bmc_{test_case.case_id}_{int(asyncio.get_event_loop().time())}",
+            case_id=test_case.case_id,
+            status=TestStatus.PASSED if exit_code == 0 else TestStatus.FAILED,
+            exit_code=exit_code,
+            output=sol_output,
+            error_output="",
+            execution_time=0.0,
+            artifacts=[]
+        )
+    
+    def _parse_exit_code(self, output: str) -> int:
+        """从输出中解析退出码"""
+        # 实际实现中应解析命令执行的退出码
+        # 这里简化处理
+        import re
+        match = re.search(r"EXIT_CODE:(\\d+)", output)
+        if match:
+            return int(match.group(1))
+        return -1
+    
+    async def _cleanup_internal(self) -> bool:
+        """清理目标板环境"""
+        try:
+            if self._access_client:
+                await self._access_client.disconnect()
+            
+            await self.log_collector.cleanup()
+            return True
+        except Exception as e:
+            await self.log_collector.collect_log("cleanup", f"Cleanup failed: {e}", "ERROR")
+            return False
+    
+    async def _perform_health_checks(self) -> HealthCheckResult:
+        """执行目标板健康检查"""
+        checks = {}
+        metrics = {}
+        
+        try:
+            if isinstance(self._access_client, SSHClient):
+                # 检查系统负载
+                result = await self._access_client.execute_command("uptime")
+                checks["system_load"] = result.returncode == 0
+                
+                # 检查磁盘空间
+                result = await self._access_client.execute_command("df -h / | tail -1 | awk '{print $5}' | sed 's/%//'")
+                if result.returncode == 0:
+                    disk_usage = int(result.stdout.strip())
+                    checks["disk_space"] = disk_usage < 90
+                    metrics["disk_usage_percent"] = disk_usage
+                
+                # 检查内存使用
+                result = await self._access_client.execute_command("free | grep Mem | awk '{print $4/$2 * 100.0}'")
+                if result.returncode == 0:
+                    memory_available = float(result.stdout.strip())
+                    checks["memory_available"] = memory_available > 10
+                    metrics["memory_available_percent"] = memory_available
+                
+                # 检查SSH连接
+                checks["ssh_connection"] = self._access_client.is_connected()
+                
+            elif isinstance(self._access_client, BMCClient):
+                # 检查BMC连接
+                checks["bmc_connection"] = await self._access_client.ping()
+                
+                # 检查电源状态
+                power_state = await self._access_client.get_power_state()
+                checks["power_state"] = power_state == "on"
+                metrics["power_state"] = 1 if power_state == "on" else 0
+                
+                # 检查传感器
+                sensors = await self._access_client.get_sensor_data()
+                checks["temperature"] = all(s["value"] < s.get("critical", 80) for s in sensors if s["type"] == "temperature")
+                metrics.update({s["name"]: s["value"] for s in sensors})
+                
+            elif isinstance(self._access_client, SerialConnection):
+                # 检查串口连接
+                checks["serial_connection"] = self._access_client.is_connected()
+                
+                # 测试简单命令
+                await self._access_client.send_command("echo health_check")
+                response = await self._access_client.read_until_timeout(10)
+                checks["system_responsive"] = "health_check" in response
+        
+        except Exception as e:
+            await self.log_collector.collect_log("health_check", f"Health check error: {e}", "ERROR")
+            checks["health_check_error"] = False
+        
+        # 评估结果
+        failed_checks = [k for k, v in checks.items() if not v]
+        if not any(checks.values()):
+            status = HealthStatus.FAILED
+            message = "Board not responding"
+        elif failed_checks:
+            status = HealthStatus.DEGRADED
+            message = f"Degraded: {', '.join(failed_checks)}"
+        else:
+            status = HealthStatus.HEALTHY
+            message = "Board healthy"
+        
+        return HealthCheckResult(
+            status=status,
+            checks=checks,
+            metrics=metrics,
+            message=message
+        )
+
+#### 1.3.4 统一日志收集接口设计
+
+统一日志收集接口LogCollector为不同环境（QEMU、目标板、BMC）提供标准化的日志采集、存储和分析能力，支持多种日志源和格式。
+
+**LogCollector核心设计**：
+```python
+import asyncio
+from datetime import datetime
+from typing import List, Dict, Any, Optional, Callable
+from dataclasses import dataclass, field
+from enum import Enum
+import json
+import os
+
+class LogLevel(Enum):
+    """日志级别枚举"""
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+    CRITICAL = "CRITICAL"
+
+class LogFormat(Enum):
+    """日志格式枚举"""
+    PLAIN_TEXT = "plain_text"
+    STRUCTURED_JSON = "structured_json"
+    SYSLOG = "syslog"
+    KERNEL_RING = "kernel_ring"
+    BINARY = "binary"
+
+@dataclass
+class LogEntry:
+    """标准化日志条目"""
+    timestamp: datetime
+    level: LogLevel
+    source: str
+    message: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    env_id: Optional[str] = None
+    test_case_id: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "timestamp": self.timestamp.isoformat(),
+            "level": self.level.value,
+            "source": self.source,
+            "message": self.message,
+            "metadata": self.metadata,
+            "env_id": self.env_id,
+            "test_case_id": self.test_case_id
+        }
+
+@dataclass
+class LogStream:
+    """日志流定义"""
+    source: str
+    log_type: str  # stdout, stderr, file, network, serial
+    format: LogFormat
+    parser: Optional[Callable[[str], LogEntry]] = None
+    enabled: bool = True
+    buffer_size: int = 4096
+    
+class LogCollector:
+    """统一日志收集器 - 标准化日志采集接口"""
+    
+    def __init__(self, env_config: EnvironmentConfig):
+        self.env_config = env_config
+        self.log_streams: Dict[str, LogStream] = {}
+        self.log_caches: Dict[str, List[LogEntry]] = {}
+        self.output_dir = f"/tmp/logs/{env_config.env_id}"
+        self._collection_tasks: Dict[str, asyncio.Task] = {}
+        self._lock = asyncio.Lock()
+        self._running = False
+        
+        # 创建日志输出目录
+        os.makedirs(self.output_dir, exist_ok=True)
+    
+    async def register_sources(self, sources: List[LogSource]) -> List[str]:
+        """
+        注册日志源
+        返回: 注册的源ID列表
+        """
+        registered_ids = []
+        
+        for source in sources:
+            source_id = f"{source.name}_{len(self.log_streams)}"
+            
+            # 创建日志流
+            log_format = self._detect_format(source.format, source.path)
+            log_stream = LogStream(
+                source=source.path,
+                log_type=source.type,
+                format=log_format,
+                parser=self._get_parser(log_format, source.type)
+            )
+            
+            self.log_streams[source_id] = log_stream
+            self.log_caches[source_id] = []
+            registered_ids.append(source_id)
+            
+            await self.collect_log("setup", f"Registered log source: {source_id}", "INFO")
+        
+        return registered_ids
+    
+    def _detect_format(self, format_hint: str, path: str) -> LogFormat:
+        """检测日志格式"""
+        if format_hint == "json":
+            return LogFormat.STRUCTURED_JSON
+        elif format_hint == "binary":
+            return LogFormat.BINARY
+        elif path.startswith("/dev/") or "tty" in path:
+            return LogFormat.KERNEL_RING
+        else:
+            return LogFormat.PLAIN_TEXT
+    
+    def _get_parser(self, log_format: LogFormat, log_type: str) -> Callable[[str], LogEntry]:
+        """获取日志解析器"""
+        if log_format == LogFormat.STRUCTURED_JSON:
+            return self._parse_json_log
+        elif log_format == LogFormat.SYSLOG:
+            return self._parse_syslog
+        else:
+            return lambda x, t=log_type: self._parse_plain_text(x, t)
+    
+    def _parse_json_log(self, line: str) -> LogEntry:
+        """解析JSON格式日志"""
+        try:
+            data = json.loads(line)
+            return LogEntry(
+                timestamp=datetime.fromisoformat(data.get("timestamp")),
+                level=LogLevel(data.get("level", "INFO")),
+                source=data.get("source", "unknown"),
+                message=data.get("message", ""),
+                metadata=data.get("metadata", {}),
+                env_id=self.env_config.env_id
+            )
+        except:
+            return self._parse_plain_text(line, "json_fallback")
+    
+    def _parse_syslog(self, line: str) -> LogEntry:
+        """解析syslog格式"""
+        # 简化实现，实际应解析完整的syslog格式
+        import re
+        pattern = r'(\\w+\\s+\\d+\\s+\\d+:\\d+:\\d+)\\s+(\\S+)\\s+(\\w+):\\s+(.*)'
+        match = re.match(pattern, line)
+        
+        if match:
+            return LogEntry(
+                timestamp=datetime.now(),  # 应解析真实时间
+                level=LogLevel.INFO,  # 应从日志级别解析
+                source=match.group(2),
+                message=match.group(4),
+                metadata={},
+                env_id=self.env_config.env_id
+            )
+        else:
+            return self._parse_plain_text(line, "syslog")
+    
+    def _parse_plain_text(self, line: str, source_type: str) -> LogEntry:
+        """解析普通文本日志"""
+        # 检测日志级别
+        level = LogLevel.INFO
+        upper_line = line.upper()
+        if "ERROR" in upper_line:
+            level = LogLevel.ERROR
+        elif "WARN" in upper_line:
+            level = LogLevel.WARNING
+        elif "DEBUG" in upper_line:
+            level = LogLevel.DEBUG
+        
+        return LogEntry(
+            timestamp=datetime.now(),
+            level=level,
+            source=source_type,
+            message=line.strip(),
+            metadata={},
+            env_id=self.env_config.env_id
+        )
+    
+    async def start_collection(self):
+        """启动日志收集"""
+        if self._running:
+            return
+        
+        self._running = True
+        for source_id, log_stream in self.log_streams.items():
+            if log_stream.enabled:
+                task = asyncio.create_task(self._collect_from_source(source_id, log_stream))
+                self._collection_tasks[source_id] = task
+    
+    async def stop_collection(self):
+        """停止日志收集"""
+        self._running = False
+        for task in self._collection_tasks.values():
+            task.cancel()
+        
+        if self._collection_tasks:
+            await asyncio.gather(*self._collection_tasks.values(), return_exceptions=True)
+        
+        self._collection_tasks.clear()
+    
+    async def _collect_from_source(self, source_id: str, log_stream: LogStream):
+        """从指定源收集日志"""
+        while self._running:
+            try:
+                if log_stream.log_type == "file":
+                    await self._tail_file(source_id, log_stream)
+                elif log_stream.log_type == "stdout":
+                    await self._read_stdout(source_id, log_stream)
+                elif log_stream.log_type == "network":
+                    await self._read_network(source_id, log_stream)
+                elif log_stream.log_type == "serial":
+                    await self._read_serial(source_id, log_stream)
+                else:
+                    await asyncio.sleep(1)  # 未知类型，等待
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                await self.collect_log("collection", f"Error collecting from {source_id}: {e}", "ERROR")
+                await asyncio.sleep(5)  # 出错后等待重试
+    
+    async def _tail_file(self, source_id: str, log_stream: LogStream):
+        """跟踪文件日志"""
+        import aiofiles
+        
+        if not os.path.exists(log_stream.source):
+            await asyncio.sleep(2)  # 等待文件创建
+            return
+        
+        async with aiofiles.open(log_stream.source, 'r') as f:
+            # 移动到文件末尾
+            await f.seek(0, os.SEEK_END)
+            
+            while self._running:
+                line = await f.readline()
+                if line:
+                    entry = log_stream.parser(line)
+                    await self._store_log_entry(source_id, entry)
+                else:
+                    await asyncio.sleep(0.5)
+    
+    async def _read_stdout(self, source_id: str, log_stream: LogStream):
+        """读取标准输出"""
+        # 实际实现应从进程stdout读取
+        await asyncio.sleep(1)
+    
+    async def _read_network(self, source_id: str, log_stream: LogStream):
+        """读取网络日志"""
+        # 实际实现应连接网络套接字
+        await asyncio.sleep(1)
+    
+    async def _read_serial(self, source_id: str, log_stream: LogStream):
+        """读取串口日志"""
+        # 实际实现应使用pyserial等库
+        await asyncio.sleep(1)
+    
+    async def _store_log_entry(self, source_id: str, entry: LogEntry):
+        """存储日志条目"""
+        async with self._lock:
+            self.log_caches[source_id].append(entry)
+            
+            # 限制缓存大小
+            if len(self.log_caches[source_id]) > 10000:
+                self.log_caches[source_id] = self.log_caches[source_id][-5000:]
+        
+        # 写入文件（异步）
+        await self._write_log_to_file(entry)
+    
+    async def _write_log_to_file(self, entry: LogEntry):
+        """写入日志到文件"""
+        log_file = f"{self.output_dir}/logs.jsonl"
+        async with aiofiles.open(log_file, 'a') as f:
+            await f.write(json.dumps(entry.to_dict()) + "\\n")
+    
+    async def collect_log(self, source: str, message: str, level: str = "INFO", 
+                         metadata: Dict[str, Any] = None, test_case_id: str = None):
+        """
+        手动收集单条日志
+        用于系统自身的事件记录
+        """
+        entry = LogEntry(
+            timestamp=datetime.now(),
+            level=LogLevel(level),
+            source=source,
+            message=message,
+            metadata=metadata or {},
+            env_id=self.env_config.env_id,
+            test_case_id=test_case_id
+        )
+        
+        if "default" not in self.log_caches:
+            self.log_caches["default"] = []
+        
+        await self._store_log_entry("default", entry)
+    
+    def get_logs(self, source_id: str = None, level: LogLevel = None, 
+                 start_time: datetime = None, end_time: datetime = None) -> List[LogEntry]:
+        """
+        查询日志
+        支持按源、级别、时间范围过滤
+        """
+        results = []
+        
+        sources_to_check = [source_id] if source_id else list(self.log_caches.keys())
+        
+        for src_id in sources_to_check:
+            if src_id not in self.log_caches:
+                continue
+            
+            for entry in self.log_caches[src_id]:
+                if level and entry.level != level:
+                    continue
+                if start_time and entry.timestamp < start_time:
+                    continue
+                if end_time and entry.timestamp > end_time:
+                    continue
+                
+                results.append(entry)
+        
+        return sorted(results, key=lambda x: x.timestamp)
+    
+    async def get_logs_async(self, **kwargs) -> List[LogEntry]:
+        """异步获取日志"""
+        return await asyncio.get_event_loop().run_in_executor(None, self.get_logs, **kwargs)
+    
+    async def cleanup(self):
+        """清理日志收集器"""
+        await self.stop_collection()
+        
+        # 清理缓存
+        self.log_caches.clear()
+        self.log_streams.clear()
+
+class MetricsCollector:
+    """指标收集器 - 与环境指标集成"""
+    
+    def __init__(self, env_config: EnvironmentConfig):
+        self.env_config = env_config
+        self.metrics = {}
+        self._sampling_task = None
+        self._running = False
+    
+    async def start_sampling(self, interval: int = 30):
+        """启动指标采样"""
+        if self._running:
+            return
+        
+        self._running = True
+        self._sampling_task = asyncio.create_task(self._sample_loop(interval))
+    
+    async def stop_sampling(self):
+        """停止指标采样"""
+        self._running = False
+        if self._sampling_task:
+            self._sampling_task.cancel()
+            try:
+                await self._sampling_task
+            except asyncio.CancelledError:
+                pass
+    
+    async def _sample_loop(self, interval: int):
+        """采样循环"""
+        while self._running:
+            try:
+                await self.collect_system_metrics()
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                # 记录错误但不停止采样
+                print(f"Metrics sampling error: {e}")
+                await asyncio.sleep(interval)
+    
+    async def collect_system_metrics(self):
+        """收集系统指标"""
+        # 实际实现应收集CPU、内存、磁盘等指标
+        pass
+    
+    def get_metric(self, name: str, default: Any = None) -> Any:
+        """获取指标值"""
+        return self.metrics.get(name, default)
+    
+    def get_all_metrics(self) -> Dict[str, Any]:
+        """获取所有指标"""
+        return self.metrics.copy()
+
+class QMPClient:
+    """QEMU Monitor Protocol客户端"""
+    
+    def __init__(self, socket_path: str):
+        self.socket_path = socket_path
+        self._reader = None
+        self._writer = None
+        self._command_id = 0
+    
+    async def connect(self):
+        """连接QMP"""
+        import json
+        self._reader, self._writer = await asyncio.open_unix_connection(self.socket_path)
+        
+        # 读取QMP欢迎消息
+        welcome = await self._reader.readline()
+        # 读取 capabilities
+        capabilities = await self._reader.readline()
+    
+    async def disconnect(self):
+        """断开QMP连接"""
+        if self._writer:
+            self._writer.close()
+            await self._writer.wait_closed()
+    
+    async def send_command(self, command: Dict[str, Any]) -> Dict[str, Any]:
+        """发送QMP命令"""
+        import json
+        self._command_id += 1
+        command["id"] = self._command_id
+        
+        self._writer.write(json.dumps(command).encode() + b"\\n")
+        await self._writer.drain()
+        
+        response = await self._reader.readline()
+        return json.loads(response.decode())
+    
+    async def ping(self) -> bool:
+        """测试QMP连接"""
+        try:
+            response = await self.send_command({"execute": "query-status"})
+            return response.get("return") is not None
+        except:
+            return False
+    
+    async def get_system_metrics(self) -> Dict[str, Any]:
+        """获取系统指标"""
+        metrics = {}
+        
+        try:
+            # 查询内存信息
+            response = await self.send_command({"execute": "query-memory-size-summary"})
+            if response.get("return"):
+                metrics["memory_total"] = response["return"].get("base-memory")
+            
+            # 查询CPU信息
+            response = await self.send_command({"execute": "query-cpus"})
+            if response.get("return"):
+                metrics["cpu_count"] = len(response["return"])
+                
+        except:
+            pass
+        
+        return metrics
+    
+    async def send_powerdown(self):
+        """发送关机命令"""
+        await self.send_command({"execute": "system_powerdown"})
+
+class SSHClient:
+    """SSH客户端"""
+    
+    def __init__(self, config: SSHConfig):
+        self.config = config
+        self.client = None
+        self.connected = False
+    
+    async def connect(self):
+        """连接SSH"""
+        import asyncssh
+        
+        connect_kwargs = {
+            "host": self.config.host,
+            "port": self.config.port,
+            "username": self.config.username,
+            "known_hosts": None,
+            "connect_timeout": self.config.timeout
+        }
+        
+        if self.config.private_key:
+            connect_kwargs["client_keys"] = [self.config.private_key]
+        elif self.config.password:
+            connect_kwargs["password"] = self.config.password
+        
+        self.client = await asyncssh.connect(**connect_kwargs)
+        self.connected = True
+    
+    async def disconnect(self):
+        """断开SSH连接"""
+        if self.client:
+            self.client.close()
+            await self.client.wait_closed()
+            self.connected = False
+    
+    def is_connected(self) -> bool:
+        """检查连接状态"""
+        return self.connected and self.client is not None
+    
+    async def execute_command(self, command: str, timeout: int = None, 
+                              environment: Dict[str, str] = None) -> 'SSHResult':
+        """执行命令"""
+        if not self.connected:
+            raise RuntimeError("Not connected")
+        
+        result = await self.client.run(
+            command,
+            timeout=timeout or self.config.timeout,
+            env=environment
+        )
+        
+        return SSHResult(
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            log_file=None
+        )
+
+@dataclass
+class SSHResult:
+    """SSH执行结果"""
+    returncode: int
+    stdout: str
+    stderr: str
+    log_file: Optional[str]
+
+class BMCClient:
+    """BMC客户端"""
+    
+    def __init__(self, config: BMCConfig):
+        self.config = config
+        self.connection = None
+    
+    async def connect(self):
+        """连接BMC"""
+        # 实际实现应使用IPMI或Redfish库
+        pass
+    
+    async def disconnect(self):
+        """断开BMC连接"""
+        pass
+    
+    async def ping(self) -> bool:
+        """测试BMC连接"""
+        # 实际实现
+        return True
+    
+    async def power_on(self):
+        """开机"""
+        pass
+    
+    async def power_off(self):
+        """关机"""
+        pass
+    
+    async def get_power_state(self) -> str:
+        """获取电源状态"""
+        return "on"
+    
+    async def get_sensor_data(self) -> List[Dict[str, Any]]:
+        """获取传感器数据"""
+        return []
+    
+    async def execute_sol_command(self, command: str, timeout: int = 300) -> str:
+        """通过SOL执行命令"""
+        # Serial-over-LAN实现
+        pass
+
+class SerialConnection:
+    """串口连接"""
+    
+    def __init__(self, config: SerialConfig):
+        self.config = config
+        self.serial = None
+        self.connected = False
+    
+    async def connect(self):
+        """连接串口"""
+        import serial_asyncio
+        
+        self.serial = await serial_asyncio.open_serial_connection(
+            url=self.config.device_path,
+            baudrate=self.config.baudrate,
+            bytesize=self.config.bytesize,
+            parity=self.config.parity,
+            stopbits=self.config.stopbits
+        )
+        self.connected = True
+    
+    async def disconnect(self):
+        """断开串口连接"""
+        if self.serial:
+            self.serial.close()
+            self.connected = False
+    
+    def is_connected(self) -> bool:
+        """检查连接状态"""
+        return self.connected
+    
+    async def send_command(self, command: str):
+        """发送命令"""
+        if not self.connected:
+            raise RuntimeError("Not connected")
+        
+        self.serial.write((command + "\\n").encode())
+        await self.serial.drain()
+    
+    async def read_until_timeout(self, timeout: int) -> str:
+        """读取直到超时"""
+        import time
+        start_time = time.time()
+        result = ""
+        
+        while time.time() - start_time < timeout:
+            data = await self.serial.read(1024)
+            if data:
+                result += data.decode('utf-8', errors='ignore')
+            await asyncio.sleep(0.1)
+        
+        return result
+    
+    async def wait_for_pattern(self, pattern: str, timeout: int = 30) -> bool:
+        """等待特定模式出现"""
+        import time
+        start_time = time.time()
+        buffer = ""
+        
+        while time.time() - start_time < timeout:
+            data = await self.serial.read(1024)
+            if data:
+                buffer += data.decode('utf-8', errors='ignore')
+                if pattern in buffer:
+                    return True
+            await asyncio.sleep(0.1)
+        
+        return False
+
+#### 1.3.5 健康检查与故障恢复流程
+
+基于TestEnvironment基类和LogCollector的统一设计，健康检查和故障恢复流程确保测试环境的稳定性和可靠性，支持自动检测、预警和恢复机制。
+
+**健康检查架构**：
+```python
+class HealthChecker:
+    """健康检查管理器"""
+    
+    def __init__(self, check_interval: int = 30, max_failures: int = 3):
+        self.check_interval = check_interval
+        self.max_failures = max_failures
+        self.environments: Dict[str, TestEnvironment] = {}
+        self.failure_counts: Dict[str, int] = {}
+        self.alert_callbacks: List[Callable] = []
+        self._running = False
+        self._check_task = None
+    
+    def register_environment(self, env: TestEnvironment):
+        """注册环境到健康检查"""
+        self.environments[env.env_id] = env
+        self.failure_counts[env.env_id] = 0
+    
+    def register_alert_callback(self, callback: Callable[[str, HealthCheckResult], None]):
+        """注册告警回调"""
+        self.alert_callbacks.append(callback)
+    
+    async def start(self):
+        """启动健康检查服务"""
+        if self._running:
+            return
+        
+        self._running = True
+        self._check_task = asyncio.create_task(self._check_loop())
+    
+    async def stop(self):
+        """停止健康检查服务"""
+        self._running = False
+        if self._check_task:
+            self._check_task.cancel()
+            try:
+                await self._check_task
+            except asyncio.CancelledError:
+                pass
+    
+    async def _check_loop(self):
+        """健康检查循环"""
+        while self._running:
+            try:
+                await self._perform_all_checks()
+                await asyncio.sleep(self.check_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"Health check loop error: {e}")
+                await asyncio.sleep(self.check_interval)
+    
+    async def _perform_all_checks(self):
+        """执行所有环境健康检查"""
+        for env_id, env in self.environments.items():
+            try:
+                health_result = await env.health_check()
+                
+                # 处理检查结果
+                if health_result.status == HealthStatus.HEALTHY:
+                    self.failure_counts[env_id] = 0
+                elif health_result.status in [HealthStatus.DEGRADED, HealthStatus.FAILED]:
+                    self.failure_counts[env_id] += 1
+                    
+                    # 触发告警
+                    await self._trigger_alerts(env_id, health_result)
+                    
+                    # 检查是否需要故障恢复
+                    if self.failure_counts[env_id] >= self.max_failures:
+                        await self._trigger_recovery(env_id, health_result)
+                
+            except Exception as e:
+                print(f"Error checking environment {env_id}: {e}")
+                self.failure_counts[env_id] += 1
+    
+    async def _trigger_alerts(self, env_id: str, health_result: HealthCheckResult):
+        """触发告警"""
+        for callback in self.alert_callbacks:
+            try:
+                await callback(env_id, health_result)
+            except Exception as e:
+                print(f"Alert callback error: {e}")
+    
+    async def _trigger_recovery(self, env_id: str, health_result: HealthCheckResult):
+        """触发故障恢复"""
+        env = self.environments.get(env_id)
+        if not env:
+            return
+        
+        # 尝试自动恢复
+        failure_info = {
+            "health_result": health_result,
+            "failure_count": self.failure_counts[env_id],
+            "last_check": datetime.now().isoformat()
+        }
+        
+        recovery_success = await env.recover_from_failure(failure_info)
+        
+        if recovery_success:
+            # 恢复成功，重置失败计数
+            self.failure_counts[env_id] = 0
+        else:
+            # 恢复失败，通知管理员
+            await self._notify_administrators(env_id, health_result, recovery_success)
+    
+    async def _notify_administrators(self, env_id: str, health_result: HealthCheckResult, 
+                                    recovery_success: bool):
+        """通知管理员"""
+        message = f"""
+        Environment Alert: {env_id}
+        Health Status: {health_result.status.value}
+        Message: {health_result.message}
+        Recovery Attempt: {'Successful' if recovery_success else 'Failed'}
+        Failed Checks: {', '.join(k for k, v in health_result.checks.items() if not v)}
+        Metrics: {health_result.metrics}
+        """
+        
+        # 实际实现应通过邮件、短信、Slack等方式通知
+        print(f"ADMIN NOTIFICATION: {message}")
+
+# 标准化故障恢复流程图
+```mermaid
+graph TD
+    A[健康检查失败] --> B{失败次数 >= max_failures?}
+    B -- 是 --> C[触发故障恢复]
+    B -- 否 --> D[记录失败,继续监控]
+    
+    C --> E[执行 recover_from_failure()]
+    E --> F{恢复结果}
+    F -- 成功 --> G[重置失败计数,继续测试]
+    F -- 失败 --> H[标记环境不可用]
+    
+    G --> I[发送恢复成功通知]
+    H --> J[发送严重告警,人工介入]
+    
+    D --> K[更新健康状态]
+```
+
+**故障恢复策略配置**：
+```python
+@dataclass
+class RecoveryConfig:
+    """故障恢复配置"""
+    max_attempts: int = 3
+    attempt_delay: int = 30  # 恢复尝试间隔（秒）
+    escalation_threshold: int = 2  # 升级阈值（失败次数）
+    
+    # 恢复策略
+    strategies: List[str] = field(default_factory=lambda: ["cleanup_setup_start", "full_restart"])
+    
+    # 通知配置
+    notify_on_degraded: bool = True
+    notify_on_failure: bool = True
+    notify_on_recovery: bool = True
+    
+    # 通知渠道
+    notification_channels: List[str] = field(default_factory=lambda: ["log", "webhook"])
+```
+
+**故障恢复成功率统计**：
+```python
+class RecoveryMetrics:
+    """故障恢复指标跟踪"""
+    
+    def __init__(self):
+        self.total_recovery_attempts = 0
+        self.successful_recoveries = 0
+        self.failed_recoveries = 0
+        self.recovery_durations = []
+        self.failure_reasons = {}
+    
+    def record_recovery_attempt(self, env_id: str, start_time: float):
+        """记录恢复尝试"""
+        self.total_recovery_attempts += 1
+        self._current_recovery_start = start_time
+        self._current_recovery_env = env_id
+    
+    def record_recovery_result(self, success: bool, failure_reason: str = None):
+        """记录恢复结果"""
+        if success:
+            self.successful_recoveries += 1
+        else:
+            self.failed_recoveries += 1
+            if failure_reason:
+                self.failure_reasons[failure_reason] = self.failure_reasons.get(failure_reason, 0) + 1
+        
+        if hasattr(self, '_current_recovery_start'):
+            duration = time.time() - self._current_recovery_start
+            self.recovery_durations.append(duration)
+    
+    def get_recovery_rate(self) -> float:
+        """获取恢复成功率"""
+        if self.total_recovery_attempts == 0:
+            return 0.0
+        return self.successful_recoveries / self.total_recovery_attempts
+```
+
+**故障恢复的持久化状态管理**：
+```python
+class EnvironmentStateManager:
+    """环境状态管理器 - 持久化状态跟踪"""
+    
+    def __init__(self, state_file: str = "/tmp/env_states.json"):
+        self.state_file = state_file
+        self.states: Dict[str, Dict[str, Any]] = {}
+        self._lock = asyncio.Lock()
+        
+        # 加载历史状态
+        self._load_states()
+    
+    async def update_state(self, env_id: str, state: EnvironmentState, 
+                          health_status: HealthStatus, metrics: Dict[str, Any]):
+        """更新环境状态"""
+        async with self._lock:
+            self.states[env_id] = {
+                "state": state.value,
+                "health_status": health_status.value,
+                "metrics": metrics,
+                "last_update": datetime.now().isoformat(),
+                "uptime": self._calculate_uptime(env_id)
+            }
+            
+            await self._save_states()
+    
+    async def record_failure(self, env_id: str, failure_type: str, details: Dict[str, Any]):
+        """记录失败事件"""
+        async with self._lock:
+            if "failure_history" not in self.states:
+                self.states["failure_history"] = []
+            
+            self.states["failure_history"].append({
+                "env_id": env_id,
+                "failure_type": failure_type,
+                "details": details,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # 限制历史记录数量
+            if len(self.states["failure_history"]) > 1000:
+                self.states["failure_history"] = self.states["failure_history"][-500:]
+            
+            await self._save_states()
+    
+    def get_state(self, env_id: str) -> Optional[Dict[str, Any]]:
+        """获取环境状态"""
+        return self.states.get(env_id)
+    
+    def get_environment_stats(self) -> Dict[str, Any]:
+        """获取环境统计信息"""
+        total_envs = len([k for k in self.states.keys() if not k.startswith("_")])
+        healthy_envs = len([
+            env for env in self.states.values() 
+            if isinstance(env, dict) and env.get("health_status") == "healthy"
+        ])
+        
+        failure_history = self.states.get("failure_history", [])
+        failure_rate = len(failure_history) / max(total_envs, 1)
+        
+        return {
+            "total_environments": total_envs,
+            "healthy_environments": healthy_envs,
+            "overall_health_rate": healthy_envs / max(total_envs, 1),
+            "total_failures": len(failure_history),
+            "failure_rate": failure_rate
+        }
+    
+    def _calculate_uptime(self, env_id: str) -> float:
+        """计算环境在线时间"""
+        # 实际实现应跟踪环境启动和关闭时间
+        return 0.0
+    
+    async def _save_states(self):
+        """保存状态到文件"""
+        import aiofiles
+        async with aiofiles.open(self.state_file, 'w') as f:
+            await f.write(json.dumps(self.states, indent=2))
+    
+    def _load_states(self):
+        """从文件加载状态"""
+        try:
+            with open(self.state_file, 'r') as f:
+                self.states = json.load(f)
+        except FileNotFoundError:
+            self.states = {}
+        except:
+            self.states = {}
+
+**最佳实践与推荐配置**：
+
+1. **健康检查频率配置**:
+   - 正常环境: 每30秒检查一次
+   - 关键测试环境: 每10秒检查一次
+   - 开发环境: 每60秒检查一次
+
+2. **故障恢复策略优先级**:
+   - Level 1: 重新连接（SSH、BMC、串口）
+   - Level 2: 服务重启（QEMU重启、应用重启）
+   - Level 3: 完整清理重建（cleanup -> setup -> start）
+   - Level 4: 物理干预（电源循环、硬件重置）
+
+3. **告警阈值设置**:
+   - 降级状态（Degraded）: 单次检查失败
+   - 失败状态（Failed）: 连续3次检查失败
+   - 需要人工介入: 连续5次检查失败或恢复失败
+
 ### 1.4 ResultAnalyzer（结果分析器）
 
 **职责定位**：智能测试结果分析和决策建议引擎
