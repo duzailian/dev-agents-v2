@@ -32,7 +32,26 @@ This document defines the internal and external APIs for the AI-Driven Firmware 
 ### `POST /jobs`
 - **Description**: Create a new agentic testing/fixing job.
 
-## 3. Knowledge Base Query
+### `GET /jobs/{job_id}`
+- **Description**: Fetch job status, current phase, and summary.
+
+### `GET /jobs/{job_id}/artifacts`
+- **Description**: List artifacts (logs, reports, patches) produced by a job.
+
+### `GET /jobs/{job_id}/report`
+- **Description**: Download the final report for a job (Markdown/JSON).
+
+## 3. Webhook Endpoints (Optional)
+
+### `POST /webhooks/gitlab`
+- **Description**: Receive GitLab webhook events (merge request, pipeline, push).
+- **Arguments**: GitLab webhook payload (JSON) with signature verification.
+
+### `POST /webhooks/redmine`
+- **Description**: Receive Redmine issue/update events for task synchronization.
+- **Arguments**: Redmine webhook payload (JSON) with signature verification.
+
+## 4. Knowledge Base Query
 
 ### `POST /knowledge/search`
 - **Arguments**:
