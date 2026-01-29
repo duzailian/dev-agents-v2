@@ -24,17 +24,22 @@
 
 ```yaml
 核心框架:
-  - 多Agent协调: CrewAI v0.28+
-  - 状态机: LangGraph (LangChain Ecosystem)
+  - 状态机与编排: LangGraph (LangChain Ecosystem) - 作为唯一编排层
+  - Agent运行时: LangChain Agents (原CrewAI仅作为Agent定义参考，不参与编排)
   - RAG引擎: LangChain + Qdrant
   - 向量数据库: Qdrant
   - 关系数据库: PostgreSQL
-  
+
 执行环境:
   - 测试环境: QEMU + 目标板 (BMC/树莓派/Windows)
   - 代码处理: Tree-sitter (C/C++语法解析)
   - 大模型: 内网API (优先) / OpenAI API (备选)
-  
+
+安全机制:
+  - 构建沙箱: Docker容器（无网络或受限网络）
+  - 代码扫描: SAST工具（Semgrep/CodeQL）
+  - 凭证管理: Secret过滤层 + Vault/环境变量引用
+
 工程实践:
   - 配置管理: Pydantic Settings
   - 日志系统: Structlog
@@ -55,18 +60,24 @@ graph TB
         API[RESTful API]
         WebUI[Web管理界面（可选）]
     end
-    
+
     subgraph "Layer 6 - 编排层"
-        CrewAI[CrewAI Agent协调]
-        LangGraph[LangGraph状态机]
+        LangGraph[LangGraph状态机<br/>统一编排控制]
         Orchestrator[执行编排器]
+        SecretFilter[Secret过滤层]
     end
-    
+
     subgraph "Layer 5 - Agent层"
         CodeAgent[CodeAgent<br/>代码分析与修改]
         TestAgent[TestAgent<br/>测试执行]
         AnalysisAgent[AnalysisAgent<br/>结果分析]
         KBAgent[KBAgent<br/>知识库管理]
+    end
+
+    subgraph "Layer 4.5 - 安全层"
+        SASTScanner[SAST安全扫描<br/>Semgrep/CodeQL]
+        BuildSandbox[构建沙箱<br/>Docker隔离]
+        TestSandbox[测试沙箱<br/>网络隔离]
     end
     
     subgraph "Layer 4 - 服务层"
@@ -96,18 +107,22 @@ graph TB
         Monitoring[监控告警]
     end
     
-    CLI --> CrewAI
-    API --> CrewAI
-    WebUI --> CrewAI
-    
-    CrewAI --> LangGraph
-    LangGraph --> Orchestrator
-    
+    CLI --> LangGraph
+    API --> LangGraph
+    WebUI --> LangGraph
+
+    LangGraph --> SecretFilter
+    SecretFilter --> Orchestrator
+
     Orchestrator --> CodeAgent
     Orchestrator --> TestAgent
     Orchestrator --> AnalysisAgent
     Orchestrator --> KBAgent
-    
+
+    CodeAgent --> SASTScanner
+    SASTScanner --> BuildSandbox
+    TestAgent --> TestSandbox
+
     CodeAgent --> ModelService
     TestAgent --> TestEnv
     AnalysisAgent --> KBAgent
@@ -2636,7 +2651,471 @@ class SynchronizationManager:
 
 ---
 
-## 9. 总结与展望
+## 9. 安全架构设计
+
+> 说明：本章定义系统的安全隔离机制，防止 LLM 生成的恶意代码造成安全事故。
+
+### 9.1 安全架构概览
+
+```mermaid
+graph TB
+    subgraph "安全边界"
+        subgraph "代码生成区（受信任）"
+            CodeAgent[CodeAgent]
+            PatchGen[补丁生成]
+        end
+
+        subgraph "安全检查层"
+            SecretFilter[Secret过滤层<br/>防止凭证泄露]
+            SASTScanner[SAST安全扫描<br/>Semgrep/CodeQL]
+            RiskAssessor[风险评估器]
+        end
+
+        subgraph "隔离执行区（不受信任）"
+            BuildSandbox[构建沙箱<br/>Docker无网络]
+            TestSandbox[测试沙箱<br/>网络白名单]
+            EnvReset[环境重置<br/>Snapshot Restore]
+        end
+    end
+
+    CodeAgent --> PatchGen
+    PatchGen --> SecretFilter
+    SecretFilter --> SASTScanner
+    SASTScanner --> RiskAssessor
+    RiskAssessor -->|通过| BuildSandbox
+    RiskAssessor -->|拒绝| HumanReview[人工审核]
+    BuildSandbox --> TestSandbox
+    TestSandbox --> EnvReset
+```
+
+### 9.2 Secret 过滤层
+
+```python
+class SecretFilter:
+    """敏感信息过滤器 - 防止凭证泄露到 LLM 上下文"""
+
+    # 敏感模式匹配
+    SECRET_PATTERNS = [
+        r'(?i)(api[_-]?key|apikey)\s*[=:]\s*["\']?[\w-]{20,}',
+        r'(?i)(password|passwd|pwd)\s*[=:]\s*["\']?[^\s"\']+',
+        r'(?i)(token|secret|credential)\s*[=:]\s*["\']?[\w-]{20,}',
+        r'(?i)bearer\s+[\w-]{20,}',
+        r'-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----',
+        r'ghp_[a-zA-Z0-9]{36}',  # GitHub Token
+        r'glpat-[\w-]{20}',      # GitLab Token
+    ]
+
+    def filter_context(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """过滤上下文中的敏感信息"""
+        filtered = {}
+        for key, value in context.items():
+            if self._is_sensitive_key(key):
+                filtered[key] = "[REDACTED]"
+            elif isinstance(value, str):
+                filtered[key] = self._mask_secrets(value)
+            elif isinstance(value, dict):
+                filtered[key] = self.filter_context(value)
+            else:
+                filtered[key] = value
+        return filtered
+
+    def _is_sensitive_key(self, key: str) -> bool:
+        """检查键名是否敏感"""
+        sensitive_keys = ['token', 'password', 'secret', 'api_key', 'credential']
+        return any(s in key.lower() for s in sensitive_keys)
+
+    def _mask_secrets(self, text: str) -> str:
+        """遮蔽文本中的敏感信息"""
+        import re
+        for pattern in self.SECRET_PATTERNS:
+            text = re.sub(pattern, '[REDACTED]', text)
+        return text
+```
+
+### 9.3 SAST 安全扫描
+
+```python
+class SASTScanner:
+    """静态应用安全测试 - 扫描 AI 生成代码中的高危操作"""
+
+    # 高危系统调用（C语言）
+    DANGEROUS_PATTERNS = {
+        'command_injection': [
+            r'\bsystem\s*\(',
+            r'\bexec[lv]?[pe]?\s*\(',
+            r'\bpopen\s*\(',
+            r'\bShellExecute\w*\s*\(',
+        ],
+        'network_access': [
+            r'\bsocket\s*\(',
+            r'\bconnect\s*\(',
+            r'\bbind\s*\(',
+            r'\blisten\s*\(',
+            r'\bcurl_easy_perform\s*\(',
+        ],
+        'file_system_danger': [
+            r'\bunlink\s*\(',
+            r'\brmdir\s*\(',
+            r'\brename\s*\(.*/etc/',
+            r'\bchmod\s*\(.*, 0?777\)',
+        ],
+        'memory_unsafe': [
+            r'\bstrcpy\s*\(',
+            r'\bsprintf\s*\(',
+            r'\bgets\s*\(',
+        ]
+    }
+
+    async def scan_patch(self, patch_content: str) -> ScanResult:
+        """扫描补丁内容"""
+        findings = []
+
+        for category, patterns in self.DANGEROUS_PATTERNS.items():
+            for pattern in patterns:
+                matches = re.findall(pattern, patch_content)
+                if matches:
+                    findings.append(SecurityFinding(
+                        category=category,
+                        pattern=pattern,
+                        matches=matches,
+                        severity=self._get_severity(category)
+                    ))
+
+        # 调用外部 SAST 工具（Semgrep）
+        external_findings = await self._run_semgrep(patch_content)
+        findings.extend(external_findings)
+
+        return ScanResult(
+            passed=len([f for f in findings if f.severity == 'critical']) == 0,
+            findings=findings,
+            requires_review=len(findings) > 0
+        )
+
+    def _get_severity(self, category: str) -> str:
+        severity_map = {
+            'command_injection': 'critical',
+            'network_access': 'high',
+            'file_system_danger': 'high',
+            'memory_unsafe': 'medium'
+        }
+        return severity_map.get(category, 'low')
+```
+
+### 9.4 构建沙箱配置
+
+```yaml
+# docker/build-sandbox.yaml
+version: '3.8'
+services:
+  build-sandbox:
+    image: firmware-build:latest
+    network_mode: none  # 完全禁用网络
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:seccomp-profile.json
+    read_only: true
+    tmpfs:
+      - /tmp:size=2G
+      - /build:size=10G
+    volumes:
+      - type: bind
+        source: ./workspace
+        target: /workspace
+        read_only: false
+    resources:
+      limits:
+        cpus: '4'
+        memory: 8G
+      reservations:
+        cpus: '2'
+        memory: 4G
+    environment:
+      - BUILD_TIMEOUT=3600
+    user: "1000:1000"  # 非 root 用户
+```
+
+### 9.5 测试沙箱配置
+
+```yaml
+# docker/test-sandbox.yaml
+version: '3.8'
+services:
+  test-sandbox:
+    image: firmware-test:latest
+    networks:
+      - test-network
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_RAW  # QEMU 可能需要
+    volumes:
+      - type: bind
+        source: ./artifacts
+        target: /artifacts
+        read_only: true
+    environment:
+      - TEST_TIMEOUT=7200
+
+networks:
+  test-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+```
+
+---
+
+## 10. Claude Code Skills 集成（可选）
+
+> 说明：Claude Code Skills 作为可选的增强能力，可在后续阶段引入以提升开发效率和代码质量。
+
+### 9.1 集成架构概览
+
+```mermaid
+graph TB
+    subgraph "Claude Code Skills 层"
+        SkillsManager[Skills 管理器]
+        CodeReview[代码审查 Skill]
+        RefactorSuggest[重构建议 Skill]
+        TestGen[测试生成 Skill]
+        DocGen[文档生成 Skill]
+    end
+
+    subgraph "系统集成点"
+        CodeAgent[CodeAgent]
+        TestAgent[TestAgent]
+        AnalysisAgent[AnalysisAgent]
+        KBAgent[KBAgent]
+    end
+
+    subgraph "Skill 触发方式"
+        CLI[CLI 命令触发]
+        API[API 调用触发]
+        Webhook[Webhook 事件触发]
+        Agent[Agent 自动触发]
+    end
+
+    CLI --> SkillsManager
+    API --> SkillsManager
+    Webhook --> SkillsManager
+    Agent --> SkillsManager
+
+    SkillsManager --> CodeReview
+    SkillsManager --> RefactorSuggest
+    SkillsManager --> TestGen
+    SkillsManager --> DocGen
+
+    CodeReview --> CodeAgent
+    RefactorSuggest --> CodeAgent
+    TestGen --> TestAgent
+    DocGen --> KBAgent
+```
+
+### 9.2 Skills 定义与能力
+
+#### 9.2.1 代码审查 Skill
+
+```python
+class CodeReviewSkill:
+    """代码审查 Skill - 基于 Claude Code 能力"""
+
+    skill_id = "firmware-code-review"
+    description = "针对固件代码的智能审查，识别潜在问题和优化点"
+
+    capabilities = [
+        "静态代码分析（C/C++ 特化）",
+        "安全漏洞检测（缓冲区溢出、整数溢出等）",
+        "固件特定模式识别（时序问题、资源泄漏）",
+        "代码风格一致性检查",
+        "性能瓶颈识别"
+    ]
+
+    async def execute(self, context: SkillContext) -> SkillResult:
+        """执行代码审查"""
+        # 1. 获取代码变更
+        code_changes = context.get_code_changes()
+
+        # 2. 调用 Claude Code 进行审查
+        review_result = await self.claude_code_review(
+            code_changes,
+            firmware_context=context.firmware_context
+        )
+
+        # 3. 结构化输出
+        return SkillResult(
+            issues=review_result.issues,
+            suggestions=review_result.suggestions,
+            severity_summary=review_result.severity_summary
+        )
+```
+
+#### 9.2.2 测试用例生成 Skill
+
+```python
+class TestGenerationSkill:
+    """测试用例生成 Skill"""
+
+    skill_id = "firmware-test-gen"
+    description = "基于代码变更自动生成测试用例"
+
+    capabilities = [
+        "单元测试生成",
+        "边界条件测试",
+        "错误路径测试",
+        "固件特定测试模式（启动序列、中断处理）"
+    ]
+
+    async def execute(self, context: SkillContext) -> SkillResult:
+        """生成测试用例"""
+        # 1. 分析代码结构
+        code_structure = await self.analyze_code_structure(context.target_files)
+
+        # 2. 生成测试用例
+        test_cases = await self.generate_test_cases(
+            code_structure,
+            test_framework=context.test_framework,  # pytest, unity, etc.
+            coverage_target=context.coverage_target
+        )
+
+        return SkillResult(
+            test_cases=test_cases,
+            coverage_estimate=self.estimate_coverage(test_cases)
+        )
+```
+
+### 9.3 Skills 管理器
+
+```python
+class SkillsManager:
+    """Claude Code Skills 管理器"""
+
+    def __init__(self):
+        self.registered_skills: Dict[str, Skill] = {}
+        self.skill_configs: Dict[str, SkillConfig] = {}
+
+    def register_skill(self, skill: Skill, config: SkillConfig):
+        """注册 Skill"""
+        self.registered_skills[skill.skill_id] = skill
+        self.skill_configs[skill.skill_id] = config
+
+    async def invoke_skill(self, skill_id: str,
+                          context: SkillContext) -> SkillResult:
+        """调用 Skill"""
+        if skill_id not in self.registered_skills:
+            raise SkillNotFoundError(f"Skill not found: {skill_id}")
+
+        skill = self.registered_skills[skill_id]
+        config = self.skill_configs[skill_id]
+
+        # 权限检查
+        if not await self._check_permissions(skill, context):
+            raise PermissionDeniedError()
+
+        # 执行 Skill
+        try:
+            result = await skill.execute(context)
+            await self._log_skill_execution(skill_id, context, result)
+            return result
+        except Exception as e:
+            await self._handle_skill_error(skill_id, context, e)
+            raise
+
+    def list_available_skills(self) -> List[SkillInfo]:
+        """列出可用的 Skills"""
+        return [
+            SkillInfo(
+                skill_id=skill.skill_id,
+                description=skill.description,
+                capabilities=skill.capabilities
+            )
+            for skill in self.registered_skills.values()
+        ]
+```
+
+### 9.4 与 Agent 系统集成
+
+```python
+class SkillEnhancedCodeAgent(CodeAgent):
+    """支持 Skills 增强的 CodeAgent"""
+
+    def __init__(self, skills_manager: SkillsManager):
+        super().__init__()
+        self.skills_manager = skills_manager
+
+    async def analyze_code_with_skills(self,
+                                       file_paths: List[str],
+                                       context: str) -> CodeAnalysis:
+        """使用 Skills 增强的代码分析"""
+
+        # 1. 基础代码分析
+        base_analysis = await self.analyze_code(file_paths, context)
+
+        # 2. 调用代码审查 Skill 增强
+        skill_context = SkillContext(
+            target_files=file_paths,
+            firmware_context=context,
+            base_analysis=base_analysis
+        )
+
+        review_result = await self.skills_manager.invoke_skill(
+            "firmware-code-review",
+            skill_context
+        )
+
+        # 3. 合并结果
+        return self._merge_analysis_results(base_analysis, review_result)
+```
+
+### 9.5 Skills 配置
+
+```yaml
+# config/skills.yaml
+skills:
+  firmware-code-review:
+    enabled: true
+    auto_trigger:
+      - on_code_change
+      - on_mr_create
+    config:
+      severity_threshold: "warning"
+      max_issues_per_file: 50
+      custom_rules:
+        - "firmware_timing_check"
+        - "memory_barrier_check"
+
+  firmware-test-gen:
+    enabled: true
+    auto_trigger:
+      - on_code_change
+    config:
+      test_framework: "pytest"
+      coverage_target: 0.8
+      include_edge_cases: true
+
+  firmware-doc-gen:
+    enabled: false  # 后续阶段启用
+    config:
+      output_format: "markdown"
+      include_api_docs: true
+```
+
+### 9.6 实施计划
+
+| 阶段 | 内容 | 优先级 |
+|------|------|--------|
+| Phase 4 | Skills 管理器基础框架 | P1 |
+| Phase 4 | 代码审查 Skill 集成 | P1 |
+| Phase 5 | 测试生成 Skill 集成 | P2 |
+| Phase 6 | 文档生成 Skill 集成 | P2 |
+
+---
+
+## 10. 总结与展望
 
 ### 9.1 架构优势
 

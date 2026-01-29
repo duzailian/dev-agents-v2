@@ -360,16 +360,19 @@ class CodeAgent(AgentBase):
             'patch_generator': GitPatchGenerator(),
             'test_generator': TestCaseGenerator(),
             'code_formatter': CodeFormatter(),
-            'build_tester': BuildTester(),
+            'syntax_checker': SyntaxChecker(),  # 仅语法检查，不执行完整构建
         }
+
+    # 注意：完整的固件构建（Firmware Build）由状态机在 BUILD_RUN 阶段统一调度执行，
+    # CodeAgent 仅负责语法检查和代码格式化，避免双重构建导致的资源浪费。
     
     async def process(self, task: Task) -> TaskResult:
         """处理代码相关任务"""
         start_time = datetime.now()
-        
+
         try:
             task_type = task.task_type
-            
+
             if task_type == "analyze_code":
                 result = await self.analyze_code(
                     task.input_data.get("file_paths"),
@@ -381,9 +384,16 @@ class CodeAgent(AgentBase):
                     task.input_data.get("requirements"),
                     task.context
                 )
-            elif task_type == "implement_changes":
-                result = await self.implement_changes(
+            elif task_type == "generate_patch":
+                # 生成补丁（不应用），由状态机 PATCH_GENERATION 阶段调用
+                result = await self.generate_patch(
                     task.input_data.get("suggestions"),
+                    task.context
+                )
+            elif task_type == "apply_patch":
+                # 应用补丁，由状态机 PATCH_APPLY 阶段调用（可插入风控检查）
+                result = await self.apply_patch(
+                    task.input_data.get("patch"),
                     task.context
                 )
             else:
@@ -495,64 +505,103 @@ class CodeAgent(AgentBase):
         
         return {"suggestions": suggestions}
     
-    async def implement_changes(self, suggestions: List[CodeSuggestion],
+    async def generate_patch(self, suggestions: List[CodeSuggestion],
                               context: Dict[str, Any]) -> Dict[str, Any]:
-        """实现代码修改并生成补丁"""
-        
+        """生成代码补丁（不应用）
+
+        注意：此方法仅生成补丁，不应用到代码库。
+        补丁应用由状态机在 PATCH_APPLY 阶段调用 apply_patch 方法执行，
+        以便在两步之间插入风控逻辑（如 FR-10 人工介入）。
+        """
+
         # 1. 选择要实现的建议（基于置信度和优先级）
         selected_suggestions = [
-            s for s in suggestions 
+            s for s in suggestions
             if s.confidence > 0.7 and s.priority >= 7
         ]
-        
+
         if not selected_suggestions:
             selected_suggestions = suggestions[:3]  # 至少选择前3个
-        
-        # 2. 应用修改
+
+        # 2. 分析修改范围
         modified_files = {}
         for suggestion in selected_suggestions:
             for file_path in suggestion.affected_files:
                 if file_path not in modified_files:
                     modified_files[file_path] = []
                 modified_files[file_path].append(suggestion)
-        
+
         # 3. 生成补丁
         patch_content = await self.tools['patch_generator'].generate_patch(
             modified_files, selected_suggestions
         )
-        
+
         # 4. 格式化代码
         formatted_patch = await self.tools['code_formatter'].format_patch(
             patch_content
         )
-        
-        # 5. 测试构建
-        build_result = await self.tools['build_tester'].test_build(
-            formatted_patch, context.get('build_config')
+
+        # 5. 语法检查（不执行完整构建）
+        syntax_result = await self.tools['syntax_checker'].check_syntax(
+            formatted_patch
         )
-        
+
         # 6. 生成测试建议
         test_suggestions = await self.tools['test_generator'].generate_tests(
             selected_suggestions
         )
-        
+
         patch_result = PatchResult(
             patch_id=str(uuid.uuid4()),
             suggestions=[s.suggestion_id for s in selected_suggestions],
             patch_content=formatted_patch,
             files_modified={
-                file: f"Applied {len(suggs)} changes"
+                file: f"Planned {len(suggs)} changes"
                 for file, suggs in modified_files.items()
             },
-            lines_added=build_result.get('lines_added', 0),
-            lines_removed=build_result.get('lines_removed', 0),
-            build_status=build_result.get('status', 'not_tested'),
-            build_output=build_result.get('output'),
+            lines_added=syntax_result.get('lines_added', 0),
+            lines_removed=syntax_result.get('lines_removed', 0),
+            syntax_valid=syntax_result.get('valid', False),
+            syntax_errors=syntax_result.get('errors', []),
             test_suggestions=test_suggestions,
+            applied=False,  # 补丁尚未应用
             created_at=datetime.now()
         )
-        
+
         return {"patch": patch_result}
+
+    async def apply_patch(self, patch: PatchResult,
+                         context: Dict[str, Any]) -> Dict[str, Any]:
+        """应用补丁到代码库
+
+        此方法由状态机在 PATCH_APPLY 阶段调用，
+        在 generate_patch 和 apply_patch 之间可插入风控检查。
+        """
+
+        # 1. 验证补丁有效性
+        if not patch.syntax_valid:
+            return {
+                "success": False,
+                "error": "Patch has syntax errors",
+                "errors": patch.syntax_errors
+            }
+
+        # 2. 应用补丁
+        apply_result = await self.tools['patch_generator'].apply_patch(
+            patch.patch_content,
+            context.get('target_branch', 'HEAD')
+        )
+
+        # 3. 更新补丁状态
+        patch.applied = True
+        patch.applied_at = datetime.now()
+
+        return {
+            "success": apply_result.get('success', False),
+            "patch": patch,
+            "applied_files": list(patch.files_modified.keys()),
+            "commit_hash": apply_result.get('commit_hash')
+        }
     
     def get_capabilities(self) -> List[AgentCapability]:
         """返回Agent的能力列表"""
@@ -581,12 +630,29 @@ class CodeAgent(AgentBase):
                 }
             ),
             AgentCapability(
-                name="implement_changes",
-                description="实现代码修改并生成补丁",
+                name="generate_patch",
+                description="生成代码补丁（不应用），由状态机在PATCH_GENERATION阶段调用",
                 input_schema={
                     "suggestions": "List[CodeSuggestion]",
                     "context": "Dict[str, Any]"
                 },
+                output_schema={
+                    "patch": "PatchResult"
+                }
+            ),
+            AgentCapability(
+                name="apply_patch",
+                description="应用补丁到代码库，由状态机在PATCH_APPLY阶段调用（可插入风控检查）",
+                input_schema={
+                    "patch": "PatchResult",
+                    "context": "Dict[str, Any]"
+                },
+                output_schema={
+                    "success": "bool",
+                    "patch": "PatchResult",
+                    "applied_files": "List[str]"
+                }
+            ),
                 output_schema={
                     "patch": "PatchResult"
                 }
@@ -1234,15 +1300,26 @@ class KnowledgeUnit:
 
 @dataclass
 class KnowledgeMetadata:
-    """知识元数据"""
-    product_line: Dict[str, str]
+    """知识元数据（与 KNOWLEDGE_SCHEMA.md 保持一致）"""
+    # 产品线信息
+    product_line: Dict[str, str]  # soc_type, firmware_stack, chipset, platform
+
+    # 标签和分类
     tags: List[str]
+    issue_type: str
+    severity: str
+    source: str  # iteration, document_import, redmine, manual
+
+    # 质量指标
     confidence_score: float
     usage_count: int
     success_rate: float
-    issue_type: str
-    severity: str
-    source: str
+
+    # 测试上下文（与 KNOWLEDGE_SCHEMA.md 对齐）
+    test_context: Optional[Dict[str, Any]] = None  # test_environment, test_board, test_duration, pass_criteria
+
+    # 执行结果（与 KNOWLEDGE_SCHEMA.md 对齐）
+    execution_result: Optional[Dict[str, Any]] = None  # status, execution_time, iterations_count, success_rate
 
 @dataclass
 class RetrievalContext:
@@ -1270,7 +1347,7 @@ class IterationRecord:
 ```python
 class KBAgent(AgentBase):
     """知识库管理专家"""
-    
+
     def _initialize_tools(self) -> Dict[str, Any]:
         return {
             'vector_store': QdrantClient(),
@@ -1278,8 +1355,107 @@ class KBAgent(AgentBase):
             'embedding_service': EmbeddingService(),
             'knowledge_processor': KnowledgeProcessor(),
             'query_router': QueryRouter(),
+            # 文档处理工具（支持 FR-22 文档导入需求）
+            'document_parser': DocumentParser(),  # 支持 md, txt, docx, pdf, xlsx
+            'text_splitter': TextSplitter(),      # 文档切分
+            'ocr_processor': OCRProcessor(),      # PDF OCR（可选）
         }
-    
+
+    async def import_document(self, file_path: str,
+                             import_config: Dict[str, Any]) -> Dict[str, Any]:
+        """导入文档到知识库（FR-22）
+
+        支持格式：
+        - Phase 2: Markdown (.md), 纯文本 (.txt)
+        - Phase 3: Word (.docx), PDF (.pdf), Excel (.xlsx, .xls)
+        """
+
+        # 1. 解析文档
+        file_ext = Path(file_path).suffix.lower()
+        parsed_content = await self.tools['document_parser'].parse(
+            file_path,
+            ocr_enabled=import_config.get('ocr_enabled', False)
+        )
+
+        # 2. 切分为知识单元
+        chunks = await self.tools['text_splitter'].split(
+            parsed_content,
+            chunk_size=import_config.get('chunk_size', 1000),
+            overlap=import_config.get('overlap', 100)
+        )
+
+        # 3. 提取元数据
+        document_metadata = {
+            'source': 'document_import',
+            'file_path': file_path,
+            'file_type': file_ext,
+            'import_time': datetime.now().isoformat(),
+            'product_line': import_config.get('product_line', {}),
+            'tags': import_config.get('tags', []),
+            'version': import_config.get('version', '1.0')
+        }
+
+        # 4. 创建知识单元并存储
+        stored_ids = []
+        for i, chunk in enumerate(chunks):
+            unit = KnowledgeUnit(
+                id=f"doc_{Path(file_path).stem}_{i:04d}",
+                title=chunk.get('title', f"Document Section {i+1}"),
+                summary=chunk.get('summary', chunk['content'][:200]),
+                content={'text': chunk['content'], 'section': chunk.get('section')},
+                metadata=KnowledgeMetadata(
+                    product_line=document_metadata['product_line'],
+                    tags=document_metadata['tags'],
+                    issue_type='documentation',
+                    severity='info',
+                    source='document_import',
+                    confidence_score=0.9,
+                    usage_count=0,
+                    success_rate=0.0
+                ),
+                created_at=datetime.now(),
+                updated_at=datetime.now()
+            )
+
+            # 向量化并存储
+            vector = await self.tools['embedding_service'].embed(
+                f"{unit.title} {unit.summary}"
+            )
+            await self.tools['vector_store'].store(unit.id, vector, unit.metadata)
+            await self.tools['metadata_store'].store_knowledge_unit(unit)
+            stored_ids.append(unit.id)
+
+        return {
+            'success': True,
+            'file_path': file_path,
+            'chunks_created': len(stored_ids),
+            'unit_ids': stored_ids,
+            'metadata': document_metadata
+        }
+
+    async def batch_import_documents(self, file_paths: List[str],
+                                    import_config: Dict[str, Any]) -> Dict[str, Any]:
+        """批量导入文档"""
+
+        results = []
+        for file_path in file_paths:
+            try:
+                result = await self.import_document(file_path, import_config)
+                results.append(result)
+            except Exception as e:
+                results.append({
+                    'success': False,
+                    'file_path': file_path,
+                    'error': str(e)
+                })
+
+        return {
+            'total_files': len(file_paths),
+            'successful': sum(1 for r in results if r.get('success')),
+            'failed': sum(1 for r in results if not r.get('success')),
+            'results': results
+        }
+
     async def retrieve_knowledge(self, query: str,
                                 context: RetrievalContext) -> List[KnowledgeUnit]:
         """检索相关知识"""

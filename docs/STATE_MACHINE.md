@@ -358,9 +358,52 @@ class ConvergenceType(Enum):
     """终止类型（终止态）"""
     SUCCESS = "success"  # 目标达成且稳定
     CONVERGED_WITH_IMPROVEMENT = "converged_with_improvement"  # 未达目标但已到达当前策略的最优点
-    PLATEAUED = "plateaued"  # 平台期（强烈建议人工介入）
+    PLATEAUED = "plateaued"  # 平台期（根据运行模式决定处理方式）
     FAILURE = "failure"  # 失败（策略无效或持续高失败率）
     TIMEOUT = "timeout"  # 超出最大迭代次数
+
+class ExecutionMode(Enum):
+    """执行模式 - 决定 PLATEAUED 状态的处理方式"""
+    INTERACTIVE = "interactive"  # 交互模式：PLATEAUED 时等待人工介入
+    CI = "ci"                    # CI模式：PLATEAUED 时自动降级并终止，不阻塞流水线
+    AUTO = "auto"                # 全自动模式：PLATEAUED 时尝试策略切换后终止
+
+@dataclass
+class PlateauHandlingStrategy:
+    """平台期处理策略 - 解决 CI 环境中无法等待人工介入的问题"""
+    mode: ExecutionMode = ExecutionMode.INTERACTIVE
+
+    # CI 模式配置
+    ci_auto_terminate: bool = True           # CI 模式下是否自动终止
+    ci_terminate_as: str = "warning"         # 终止状态: "warning" | "failure"
+    ci_max_wait_seconds: int = 0             # 最大等待时间（0=不等待，立即终止）
+    ci_notification_channels: list = None    # 通知渠道: ["email", "slack", "webhook"]
+
+    # 自动模式配置
+    auto_retry_with_different_strategy: bool = False  # 是否尝试切换策略
+    auto_max_strategy_switches: int = 2              # 最大策略切换次数
+    auto_fallback_strategies: list = None            # 备选策略列表
+
+    def handle_plateau(self, context: 'ExecutionContext') -> tuple:
+        """根据模式处理平台期"""
+        if self.mode == ExecutionMode.INTERACTIVE:
+            return ("HUMAN_REVIEW", "平台期检测，等待人工介入")
+
+        elif self.mode == ExecutionMode.CI:
+            # CI 模式：立即终止，不阻塞流水线
+            if self.ci_terminate_as == "warning":
+                return ("SUCCESS_WITH_WARNING", f"CI模式：平台期自动降级为警告，当前通过率 {context.pass_rate:.1%}")
+            else:
+                return ("FAILURE", f"CI模式：平台期自动降级为失败，当前通过率 {context.pass_rate:.1%}")
+
+        elif self.mode == ExecutionMode.AUTO:
+            # 自动模式：尝试切换策略
+            if context.strategy_switch_count < self.auto_max_strategy_switches:
+                return ("STRATEGY_SWITCH", "平台期检测，尝试切换优化策略")
+            else:
+                return ("FAILURE", f"自动模式：策略切换次数已达上限 ({self.auto_max_strategy_switches})")
+
+        return ("FAILURE", "未知执行模式")
 
 @dataclass
 class ConvergenceCriteria:

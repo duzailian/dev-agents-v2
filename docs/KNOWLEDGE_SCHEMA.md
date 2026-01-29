@@ -185,7 +185,45 @@ KnowledgeUnit → 向量化 → Qdrant + PostgreSQL
           "default": "medium"
         },
         "author": {"type": "string"},
-        "confidence_score": {"type": "number", "minimum": 0, "maximum": 1}
+        "confidence_score": {"type": "number", "minimum": 0, "maximum": 1},
+        "verification_status": {
+          "type": "string",
+          "enum": ["pending_verify", "verified", "rejected", "deprecated"],
+          "default": "pending_verify",
+          "description": "知识验证状态：pending_verify=自动提取待验证，verified=人工或多次验证通过，rejected=验证失败，deprecated=已过时"
+        },
+        "maturity_level": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "default": 0,
+          "description": "知识成熟度：0=新建，1=单次验证，2=多次验证，3=跨产品线验证，4=生产验证，5=标准化"
+        },
+        "verification_history": {
+          "type": "array",
+          "description": "验证历史记录，防止错误知识污染知识库",
+          "items": {
+            "type": "object",
+            "properties": {
+              "verified_at": {"type": "string", "format": "date-time"},
+              "verified_by": {"type": "string"},
+              "verification_type": {"type": "string", "enum": ["auto", "manual", "production"]},
+              "result": {"type": "string", "enum": ["pass", "fail"]},
+              "notes": {"type": "string"}
+            }
+          }
+        },
+        "usage_stats": {
+          "type": "object",
+          "description": "使用统计，用于知识老化和权重调整",
+          "properties": {
+            "total_retrievals": {"type": "integer", "minimum": 0, "default": 0},
+            "successful_applications": {"type": "integer", "minimum": 0, "default": 0},
+            "failed_applications": {"type": "integer", "minimum": 0, "default": 0},
+            "last_used_at": {"type": "string", "format": "date-time"},
+            "effectiveness_score": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        }
       }
     },
     "relationships": {
@@ -285,6 +323,29 @@ firmware_stacks:
     - "UEFI_3.0"
     - "EDK2"
     - "Aptio"
+
+  ARM_TF:  # ARM Trusted Firmware
+    - "ARM_TF_2.8"
+    - "ARM_TF_2.9"
+    - "ARM_TF_2.10"
+    - "ARM_TF_Custom"
+
+  RTOS:  # Real-Time Operating Systems
+    - "FreeRTOS"
+    - "Zephyr"
+    - "ThreadX"
+    - "VxWorks"
+    - "RT-Thread"
+    - "uC/OS"
+
+  UBOOT:  # U-Boot Bootloader
+    - "UBOOT_2023"
+    - "UBOOT_2024"
+    - "UBOOT_SPL"
+    - "UBOOT_Custom"
+    - "UEFI_3.0"
+    - "EDK2"
+    - "Aptio"
     
   Legacy_BIOS:
     - "Legacy_BIOS"
@@ -324,9 +385,12 @@ firmware_stacks:
       ]
     },
     "firmware_stack": {
-      "type": "string", 
+      "type": "string",
       "enum": [
         "UEFI_2.8", "UEFI_2.9", "UEFI_3.0", "EDK2", "Aptio",
+        "ARM_TF", "ARM_TF_2.8", "ARM_TF_2.9", "ARM_TF_2.10",
+        "RTOS", "FreeRTOS", "Zephyr", "ThreadX", "VxWorks",
+        "UBOOT", "UBOOT_2023", "UBOOT_2024", "UBOOT_SPL",
         "Legacy_BIOS", "Coreboot", "OpenBMC", "IPMI", "Redfish",
         "Linux", "FreeRTOS", "Zephyr", "GRUB", "U-Boot"
       ]
