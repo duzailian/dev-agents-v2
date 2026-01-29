@@ -632,9 +632,664 @@ def convergence_check_node(state: State) -> State:
 ## 9. 运行约束与治理（并发、权限、限流、记忆、日志）
 
 ### 9.1 并发与异步策略
+
+#### 9.1.1 ResourceLock设计
+
+资源锁机制用于确保关键资源的互斥访问，防止资源竞争和冲突。
+
+**锁类型与定义**
+
+```python
+from enum import Enum
+from dataclasses import dataclass, field
+from typing import Optional, Dict, List
+from datetime import datetime
+import asyncio
+from contextlib import asynccontextmanager
+
+class ResourceType(Enum):
+    """资源类型枚举"""
+    QEMU_INSTANCE = "qemu_instance"
+    BOARD_CARD = "board_card"
+    PORT = "port"
+    NETWORK_INTERFACE = "network_interface"
+    STORAGE = "storage"
+
+class LockState(Enum):
+    """锁状态"""
+    AVAILABLE = "available"
+    LOCKED = "locked"
+    WAITING = "waiting"
+    TIMEOUT = "timeout"
+    ERROR = "error"
+
+@dataclass
+class ResourceLock:
+    """资源锁数据模型"""
+    lock_id: str
+    resource_type: ResourceType
+    resource_id: str  # 资源唯一标识
+    owner_id: str  # 锁持有者（task_id）
+    acquired_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    state: LockState = LockState.AVAILABLE
+    timeout_seconds: int = 300  # 默认获取超时: 300秒
+    metadata: Dict = field(default_factory=dict)
+
+    def is_valid(self) -> bool:
+        """检查锁是否有效"""
+        if self.state != LockState.LOCKED:
+            return False
+        if self.expires_at and datetime.utcnow() > self.expires_at:
+            return False
+        return True
+
+    def is_expired(self) -> bool:
+        """检查锁是否已过期"""
+        return self.expires_at and datetime.utcnow() > self.expires_at
+```
+
+**QEMU实例锁**
+
+QEMU实例锁确保同一QEMU实例在同一时间只能被一个任务使用：
+
+```python
+class QEMULockManager:
+    """QEMU实例锁管理器"""
+
+    def __init__(self, config: Dict):
+        self.locks: Dict[str, ResourceLock] = {}  # resource_id -> ResourceLock
+        self.waiting_queues: Dict[str, asyncio.Queue] = {}  # resource_id -> waiting queue
+        self.default_timeout = config.get("qemu_lock_timeout", 300)  # 5分钟
+        self.deadlock_detection_interval = config.get("deadlock_check_interval", 60)  # 1分钟
+
+    async def acquire_lock(
+        self,
+        resource_id: str,
+        owner_id: str,
+        timeout: Optional[int] = None
+    ) -> ResourceLock:
+        """获取QEMU实例锁（互斥访问）"""
+        timeout = timeout or self.default_timeout
+        resource_key = f"qemu:{resource_id}"
+
+        # 检查锁状态
+        existing_lock = self.locks.get(resource_key)
+        if existing_lock and existing_lock.is_valid():
+            # 锁已被占用，加入等待队列
+            queue = self.waiting_queues.setdefault(resource_key, asyncio.Queue())
+            try:
+                await asyncio.wait_for(queue.get(), timeout=timeout)
+            except asyncio.TimeoutError:
+                # 获取超时
+                return None
+
+        # 获取锁
+        lock = ResourceLock(
+            lock_id=f"{resource_key}:{owner_id}:{int(datetime.utcnow().timestamp())}",
+            resource_type=ResourceType.QEMU_INSTANCE,
+            resource_id=resource_id,
+            owner_id=owner_id,
+            acquired_at=datetime.utcnow(),
+            state=LockState.LOCKED,
+            timeout_seconds=timeout
+        )
+        self.locks[resource_key] = lock
+        return lock
+
+    async def release_lock(self, lock: ResourceLock):
+        """释放锁"""
+        resource_key = f"{lock.resource_type.value}:{lock.resource_id}"
+        existing_lock = self.locks.get(resource_key)
+
+        if existing_lock and existing_lock.lock_id == lock.lock_id:
+            # 释放锁
+            del self.locks[resource_key]
+
+            # 通知等待者
+            queue = self.waiting_queues.get(resource_key)
+            if queue and not queue.empty():
+                try:
+                    await queue.put_nowait(None)
+                except asyncio.QueueFull:
+                    pass
+
+    @asynccontextmanager
+    async def lock_context(self, resource_id: str, owner_id: str):
+        """锁上下文管理器"""
+        lock = None
+        try:
+            lock = await self.acquire_lock(resource_id, owner_id)
+            if not lock:
+                raise TimeoutError(f"Failed to acquire lock for {resource_id}")
+            yield lock
+        finally:
+            if lock:
+                await self.release_lock(lock)
+```
+
+**板卡资源锁**
+
+板卡资源锁支持信号量机制，允许最多N个任务同时访问：
+
+```python
+class BoardCardLockManager:
+    """板卡资源锁管理器（支持并发访问限制）"""
+
+    def __init__(self, config: Dict):
+        self.semaphores: Dict[str, asyncio.Semaphore] = {}
+        self.concurrent_limits: Dict[str, int] = config.get("board_concurrent_limits", {})
+        self.default_concurrent = config.get("default_board_concurrent", 2)  # 默认最多2个任务
+
+    def _get_semaphore(self, resource_id: str) -> asyncio.Semaphore:
+        """获取或创建信号量"""
+        if resource_id not in self.semaphores:
+            limit = self.concurrent_limits.get(resource_id, self.default_concurrent)
+            self.semaphores[resource_id] = asyncio.Semaphore(limit)
+        return self.semaphores[resource_id]
+
+    async def acquire(self, resource_id: str, owner_id: str) -> bool:
+        """获取板卡资源访问权"""
+        semaphore = self._get_semaphore(resource_id)
+        acquired = await semaphore.acquire()
+        if acquired:
+            return True
+        return False
+
+    async def release(self, resource_id: str):
+        """释放板卡资源访问权"""
+        semaphore = self._get_semaphore(resource_id)
+        semaphore.release()
+
+    @asynccontextmanager
+    async def acquire_context(self, resource_id: str, owner_id: str):
+        """资源访问上下文管理器"""
+        acquired = False
+        try:
+            acquired = await self.acquire(resource_id, owner_id)
+            if not acquired:
+                raise RuntimeError(f"Failed to acquire board resource {resource_id}")
+            yield True
+        finally:
+            if acquired:
+                await self.release(resource_id)
+```
+
+**锁获取超时机制**
+
+所有锁获取操作都支持超时配置，防止无限等待：
+
+```python
+class LockTimeoutManager:
+    """锁超时管理器"""
+
+    @staticmethod
+    async def acquire_with_timeout(
+        acquire_func,
+        *args,
+        timeout: int = 300,
+        **kwargs
+    ):
+        """带超时的锁获取"""
+        try:
+            return await asyncio.wait_for(
+                acquire_func(*args, **kwargs),
+                timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            raise LockTimeoutError(f"Lock acquisition timed out after {timeout} seconds")
+
+    @staticmethod
+    async def check_stale_locks(lock_manager, max_idle_time: int = 600):
+        """检查并清理闲置锁"""
+        now = datetime.utcnow()
+        stale_locks = []
+
+        for lock_id, lock in lock_manager.locks.items():
+            if lock.state == LockState.LOCKED and lock.acquired_at:
+                idle_time = (now - lock.acquired_at).total_seconds()
+                if idle_time > max_idle_time:
+                    stale_locks.append(lock)
+
+        # 强制释放闲置锁
+        for lock in stale_locks:
+            await lock_manager.release_lock(lock)
+            print(f"Released stale lock {lock.lock_id} (idle {idle_time}s)")
+```
+
+**死锁检测机制**
+
+定期检测锁等待图中是否存在循环依赖，避免死锁：
+
+```python
+class DeadlockDetector:
+    """死锁检测器"""
+
+    def __init__(self, check_interval: int = 60):
+        self.check_interval = check_interval
+        self.lock_graph: Dict[str, List[str]] = {}  # owner_id -> [waiting_for_resource_ids]
+        self.resource_owners: Dict[str, str] = {}  # resource_id -> owner_id
+        self._detection_task: Optional[asyncio.Task] = None
+
+    async def start_detection(self):
+        """启动死锁检测任务"""
+        self._detection_task = asyncio.create_task(self._detection_loop())
+
+    async def stop_detection(self):
+        """停止死锁检测"""
+        if self._detection_task:
+            self._detection_task.cancel()
+            try:
+                await self._detection_task
+            except asyncio.CancelledError:
+                pass
+
+    def record_lock_request(self, owner_id: str, waiting_for_resource: str):
+        """记录锁请求"""
+        self.lock_graph.setdefault(owner_id, []).append(waiting_for_resource)
+
+    def record_lock_acquisition(self, owner_id: str, resource_id: str):
+        """记录锁获取"""
+        self.resource_owners[resource_id] = owner_id
+
+    def record_lock_release(self, owner_id: str, resource_id: str):
+        """记录锁释放"""
+        if resource_id in self.resource_owners:
+            del self.resource_owners[resource_id]
+
+    async def _detection_loop(self):
+        """死锁检测循环"""
+        while True:
+            await asyncio.sleep(self.check_interval)
+            deadlocks = self.detect_deadlock()
+            if deadlocks:
+                for cycle in deadlocks:
+                    print(f"DEADLOCK DETECTED: {cycle}")
+                    # 触发告警或自动处理
+
+    def detect_deadlock(self) -> List[List[str]]:
+        """检测死锁（环检测算法）"""
+        cycles = []
+
+        # 构建依赖图
+        graph: Dict[str, List[str]] = {}
+        for owner_id, waiting_resources in self.lock_graph.items():
+            holders = []
+            for resource_id in waiting_resources:
+                holder = self.resource_owners.get(resource_id)
+                if holder:
+                    holders.append(holder)
+            graph[owner_id] = holders
+
+        # DFS检测环
+        visited = set()
+        path = []
+
+        def dfs(node: str) -> bool:
+            if node in path:
+                # 发现环
+                cycle_start = path.index(node)
+                cycles.append(path[cycle_start:])
+                return True
+
+            if node in visited:
+                return False
+
+            visited.add(node)
+            path.append(node)
+
+            for neighbor in graph.get(node, []):
+                if dfs(neighbor):
+                    return True
+
+            path.pop()
+            return False
+
+        for node in graph:
+            dfs(node)
+
+        return cycles
+```
+
+#### 9.1.2 TaskScheduler调度规则
+
+任务调度器基于优先级队列和资源可用性检查，实现公平高效的任务调度。
+
+**优先级队列设计**
+
+```python
+from enum import Enum
+from dataclasses import dataclass, field
+from typing import Optional
+import heapq
+
+class TaskPriority(Enum):
+    """任务优先级"""
+    CRITICAL = 1   # 紧急任务，最高优先级
+    HIGH = 2       # 高优先级
+    NORMAL = 3     # 普通优先级
+    LOW = 4        # 低优先级
+
+@dataclass(order=True)
+class PrioritizedTask:
+    """带优先级的任务"""
+    priority: TaskPriority = field(compare=True)
+    timestamp: float = field(compare=True)
+    task_id: str = field(compare=False)
+    required_resources: List[str] = field(default_factory=list, compare=False)
+    estimated_duration: Optional[int] = field(default=None, compare=False)
+    retry_count: int = field(default=0, compare=False)
+
+class TaskScheduler:
+    """任务调度器（基于优先级队列）"""
+
+    def __init__(self, config: Dict):
+        self.queue: list = []  # 最小堆
+        self.lock_manager = ResourceLockManager(config)
+        self.active_tasks: Dict[str, PrioritizedTask] = {}
+        self.max_concurrent_tasks = config.get("max_concurrent_tasks", 10)
+        self.max_concurrent_per_environment = config.get("max_concurrent_per_environment", 3)
+        self.environment_counts: Dict[str, int] = {}
+        self.fairness_counter: Dict[TaskPriority, int] = {p: 0 for p in TaskPriority}
+
+    async def submit_task(
+        self,
+        task_id: str,
+        priority: TaskPriority,
+        required_resources: List[str],
+        estimated_duration: Optional[int] = None
+    ) -> bool:
+        """提交任务到调度队列"""
+        task = PrioritizedTask(
+            priority=priority,
+            timestamp=datetime.utcnow().timestamp(),
+            task_id=task_id,
+            required_resources=required_resources,
+            estimated_duration=estimated_duration
+        )
+        heapq.heappush(self.queue, task)
+        return True
+
+    async def schedule_next(self) -> Optional[str]:
+        """调度下一个任务（高优先级优先）"""
+        if not self.queue:
+            return None
+
+        # 检查并发限制
+        if len(self.active_tasks) >= self.max_concurrent_tasks:
+            return None
+
+        # 遍历队列，寻找可执行的任务
+        queue_copy = self.queue.copy()
+        for task in queue_copy:
+            # 检查资源可用性
+            if await self._check_resources_available(task):
+                # 检查环境并发限制
+                if await self._check_environment_limits(task):
+                    # 提取任务
+                    heapq.heappop(self.queue)
+                    self.active_tasks[task.task_id] = task
+                    self._update_fairness_counter(task.priority)
+                    return task.task_id
+
+        return None
+
+    async def _check_resources_available(self, task: PrioritizedTask) -> bool:
+        """检查所需资源是否可用"""
+        for resource_id in task.required_resources:
+            if self.lock_manager.is_locked(resource_id):
+                return False
+        return True
+
+    async def _check_environment_limits(self, task: PrioritizedTask) -> bool:
+        """检查环境并发限制"""
+        environment = task.task_id.split(":")[0]
+        current_count = self.environment_counts.get(environment, 0)
+        return current_count < self.max_concurrent_per_environment
+
+    def _update_fairness_counter(self, priority: TaskPriority):
+        """更新公平计数器（防止饥饿）"""
+        self.fairness_counter[priority] += 1
+
+    def _should_boost_priority(self, task: PrioritizedTask) -> bool:
+        """判断是否需要提升优先级（防止低优先级任务饿死）"""
+        wait_time = datetime.utcnow().timestamp() - task.timestamp
+        if task.priority == TaskPriority.LOW and wait_time > 3600:  # 1小时
+            return True
+        if task.priority == TaskPriority.NORMAL and wait_time > 7200:  # 2小时
+            return True
+        return False
+
+    async def complete_task(self, task_id: str):
+        """标记任务完成"""
+        if task_id in self.active_tasks:
+            task = self.active_tasks.pop(task_id)
+            environment = task_id.split(":")[0]
+            self.environment_counts[environment] = self.environment_counts.get(environment, 1) - 1
+```
+
+**公平调度机制**
+
+防止高优先级任务饿死低优先级任务：
+
+```python
+class FairScheduler:
+    """公平调度器（防止饥饿）"""
+
+    def __init__(self, max_wait_boost_thresholds: Dict[TaskPriority, int] = None):
+        self.max_wait_boost_thresholds = max_wait_boost_thresholds or {
+            TaskPriority.LOW: 3600,
+            TaskPriority.NORMAL: 7200,
+        }
+        self.task_wait_times: Dict[str, float] = {}
+
+    def register_task(self, task_id: str, priority: TaskPriority):
+        """注册任务"""
+        self.task_wait_times[task_id] = datetime.utcnow().timestamp()
+
+    def get_effective_priority(self, task_id: str, original_priority: TaskPriority) -> TaskPriority:
+        """获取有效优先级（考虑公平性）"""
+        if task_id not in self.task_wait_times:
+            return original_priority
+
+        wait_time = datetime.utcnow().timestamp() - self.task_wait_times[task_id]
+        boost_threshold = self.max_wait_boost_thresholds.get(original_priority, float('inf'))
+
+        if wait_time > boost_threshold:
+            # 提升一级优先级
+            if original_priority == TaskPriority.LOW:
+                return TaskPriority.NORMAL
+            elif original_priority == TaskPriority.NORMAL:
+                return TaskPriority.HIGH
+
+        return original_priority
+
+    def unregister_task(self, task_id: str):
+        """取消任务注册"""
+        if task_id in self.task_wait_times:
+            del self.task_wait_times[task_id]
+```
+
+**资源可用性检查与等待**
+
+```python
+class ResourceWaiter:
+    """资源等待器"""
+
+    def __init__(self, lock_manager, timeout: int = 300):
+        self.lock_manager = lock_manager
+        self.timeout = timeout
+        self.waiting_tasks: Dict[str, asyncio.Event] = {}
+
+    async def wait_for_resources(
+        self,
+        task_id: str,
+        required_resources: List[str]
+    ) -> bool:
+        """等待资源变为可用"""
+        event = asyncio.Event()
+        self.waiting_tasks[task_id] = event
+
+        try:
+            await asyncio.wait_for(event.wait(), timeout=self.timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+        finally:
+            if task_id in self.waiting_tasks:
+                del self.waiting_tasks[task_id]
+
+    async def notify_resource_available(self, resource_id: str):
+        """通知资源可用（唤醒等待的任务）"""
+        for task_id, event in self.waiting_tasks.items():
+            task = self._get_task_by_id(task_id)
+            if task and resource_id in task.required_resources:
+                event.set()
+                break
+
+    def _get_task_by_id(self, task_id: str):
+        """根据task_id获取任务（简化实现）"""
+        # 实际实现应从调度器获取
+        return None
+```
+
+#### 9.1.3 并发限制配置
+
+系统级别的并发控制配置：
+
+```python
+from dataclasses import dataclass
+from typing import Dict, Optional
+
+@dataclass
+class ConcurrencyLimits:
+    """并发限制配置"""
+    # 全局限制
+    max_concurrent_tasks: int = 10
+    max_concurrent_qemu_instances: int = 5
+    max_concurrent_board_access: Dict[str, int] = None
+
+    # 环境级别限制
+    max_concurrent_per_environment: int = 3
+
+    # 资源使用率限制
+    max_cpu_usage_percent: float = 80.0
+    max_memory_usage_percent: float = 85.0
+    max_disk_io_mbps: Optional[int] = None
+    max_network_bandwidth_mbps: Optional[int] = None
+
+    # 锁超时配置
+    qemu_lock_timeout_seconds: int = 300
+    board_lock_timeout_seconds: int = 600
+    default_lock_timeout_seconds: int = 300
+
+    # 死锁检测
+    deadlock_detection_interval: int = 60
+    deadlock_max_idle_time: int = 600
+
+    # 公平调度
+    enable_fair_scheduling: bool = True
+    low_priority_boost_wait_seconds: int = 3600
+    normal_priority_boost_wait_seconds: int = 7200
+
+    def __post_init__(self):
+        if self.max_concurrent_board_access is None:
+            self.max_concurrent_board_access = {
+                "board_a": 2,
+                "board_b": 1,
+                "board_c": 2,
+            }
+
+class ConcurrencyMonitor:
+    """并发监控器"""
+
+    def __init__(self, limits: ConcurrencyLimits):
+        self.limits = limits
+        self.current_task_count = 0
+        self.current_qemu_count = 0
+        self.environment_counts: Dict[str, int] = {}
+        self.resource_usage = {
+            "cpu_percent": 0.0,
+            "memory_percent": 0.0,
+            "disk_io_mbps": 0,
+            "network_mbps": 0,
+        }
+
+    def can_schedule_task(self, task_id: str, required_qemu: int = 0) -> bool:
+        """检查是否可以调度任务"""
+        # 检查全局并发限制
+        if self.current_task_count >= self.limits.max_concurrent_tasks:
+            return False
+
+        # 检查QEMU实例限制
+        if required_qemu > 0 and self.current_qemu_count + required_qemu > self.limits.max_concurrent_qemu_instances:
+            return False
+
+        # 检查环境并发限制
+        environment = task_id.split(":")[0]
+        env_count = self.environment_counts.get(environment, 0)
+        if env_count >= self.limits.max_concurrent_per_environment:
+            return False
+
+        # 检查资源使用率
+        if self.resource_usage["cpu_percent"] > self.limits.max_cpu_usage_percent:
+            return False
+        if self.resource_usage["memory_percent"] > self.limits.max_memory_usage_percent:
+            return False
+
+        return True
+
+    def record_task_start(self, task_id: str, qemu_count: int = 0):
+        """记录任务开始"""
+        self.current_task_count += 1
+        self.current_qemu_count += qemu_count
+        environment = task_id.split(":")[0]
+        self.environment_counts[environment] = self.environment_counts.get(environment, 0) + 1
+
+    def record_task_complete(self, task_id: str, qemu_count: int = 0):
+        """记录任务完成"""
+        self.current_task_count -= 1
+        self.current_qemu_count -= qemu_count
+        environment = task_id.split(":")[0]
+        if environment in self.environment_counts:
+            self.environment_counts[environment] -= 1
+
+    def update_resource_usage(self, cpu_percent: float, memory_percent: float):
+        """更新资源使用率"""
+        self.resource_usage["cpu_percent"] = cpu_percent
+        self.resource_usage["memory_percent"] = memory_percent
+
+    def get_status(self) -> Dict:
+        """获取当前并发状态"""
+        return {
+            "task_count": self.current_task_count,
+            "qemu_count": self.current_qemu_count,
+            "environment_counts": self.environment_counts.copy(),
+            "resource_usage": self.resource_usage.copy(),
+            "limits": {
+                "max_tasks": self.limits.max_concurrent_tasks,
+                "max_qemu": self.limits.max_concurrent_qemu_instances,
+                "max_per_env": self.limits.max_concurrent_per_environment,
+            }
+        }
+```
+
+**并发控制总结**
+
+| 控制维度 | 配置项 | 默认值 | 说明 |
+| :--- | :--- | :---: | :--- |
+| **全局并发** | max_concurrent_tasks | 10 | 系统最大并发任务数 |
+| **QEMU实例** | max_concurrent_qemu_instances | 5 | 最大并发QEMU实例数 |
+| **环境限制** | max_concurrent_per_environment | 3 | 每个环境的最大并发数 |
+| **板卡并发** | max_concurrent_board_access | 变化 | 每个板卡的最大并发访问数 |
+| **CPU限制** | max_cpu_usage_percent | 80% | 最大CPU使用率 |
+| **内存限制** | max_memory_usage_percent | 85% | 最大内存使用率 |
+| **锁超时** | qemu_lock_timeout_seconds | 300 | QEMU锁获取超时（秒） |
+| **死锁检测** | deadlock_detection_interval | 60 | 死锁检测间隔（秒） |
+| **公平调度** | low_priority_boost_wait_seconds | 3600 | 低优先级任务提升等待时间 |
+
 - 核心I/O流程（仓库拉取、模型调用、测试执行、日志采集）必须使用 `async/await` 接口。
 - 任务级并行与资源锁（板卡、端口）使用调度器统一管理。
-
 ### 9.2 Agent解耦与消息总线
 - Agent间通信通过消息总线/事件队列完成，禁止直接调用对方内部实现。
 - 消息包含 `task_id`、`iteration_id`、`sender`、`receiver`、`payload_schema_version`。
