@@ -187,8 +187,14 @@ API：内网大模型API（优先）
 
 | 阶段 | 建议内容 | 优先级 |
 |------|----------|--------|
-| Phase 2 | 实现 SecretFilter 和 SAST 扫描器 | P1 |
-| Phase 3 | 实现知识库验证机制和老化策略 | P2 |
+| **Phase 2** | **运维落地保障**：Prompt版本管理、灰度发布、快速回滚机制 | **P1** |
+| **Phase 2** | **Agent拒识策略**：定义Agent System Prompt中的拒识模板和非业务指令检测 | **P1** |
+| **Phase 2** | **安全实现**：实现 SecretFilter 和 SAST 扫描器 | **P1** |
+| Phase 2 | 知识老化机制：增加 validity_period 和自动淘汰策略 | P2 |
+| Phase 2 | 工具风险等级：对所有Agent工具进行风险分级（高危/中危/低危） | P2 |
+| Phase 2 | Token成本预估：预估单次迭代消耗和成本 | P2 |
+| Phase 3 | 知识库验证机制：实现 verification_status 状态流转 | P2 |
+| Phase 4 | 观测性增强：核心指标（延迟P99）、告警规则、评估集与回放机制 | P3 |
 | Phase 4 | 开发收敛参数可视化调试工具 | P3 |
 
 ---
