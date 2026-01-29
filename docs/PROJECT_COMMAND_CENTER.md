@@ -40,13 +40,17 @@
 ## 🔧 推荐Tech Stack
 
 ```
-多Agent协调：CrewAI
-状态机：LangGraph
-RAG知识库：LangChain
+状态机与编排：LangGraph（唯一编排层）
+Agent运行时：LangChain Agents
+RAG知识库：LangChain + Qdrant
 向量数据库：Qdrant
+关系数据库：PostgreSQL
+安全机制：SecretFilter + SAST扫描 + Docker沙箱
 执行引擎：CodeAnalyzer、CodeModifier、TestOrchestrator、ResultAnalyzer
 API：内网大模型API（优先）
 ```
+
+> 注：2026-01-29 架构优化后，移除了 CrewAI 双重编排，以 LangGraph 为唯一编排层
 
 ## 📊 工作计划（6大阶段）
 
@@ -160,14 +164,74 @@ API：内网大模型API（优先）
 ## 🚀 下次session的快速开始
 
 1. 首先打开本文件（PROJECT_COMMAND_CENTER.md）
-2. 查看"当前进度"和"工作计划（6大阶段）"
-3. 找到对应的小任务（任务1-1、1-2等）
-4. 执行下一个未完成的任务
+2. 查看"当前进度"和"待处理事项"
+3. 查看 CLAUDE.md 了解项目概况
+4. 继续执行 Phase 2 核心模块实现
 
-例如：
-- 如果任务1-1已完成 ✅，则执行任务1-2
-- 如果任务1-2已完成 ✅，则执行任务1-3
-- 等等...
+---
+
+## ⚠️ 待处理事项（下次session参考）
+
+### 🟢 设计评审已完成 - 无阻塞性问题
+
+**2026-01-29 设计评审结果**：所有已知问题已修复完成
+
+| 问题类型 | 数量 | 状态 |
+|----------|------|------|
+| Critical | 2 | ✅ 已修复 |
+| High | 5 | ✅ 已修复 |
+| Medium | 4 | ✅ 已修复 |
+| Low | 2 | ✅ 已修复 |
+
+### 📋 后续阶段建议（非阻塞，可在实现时处理）
+
+| 阶段 | 建议内容 | 优先级 |
+|------|----------|--------|
+| Phase 2 | 实现 SecretFilter 和 SAST 扫描器 | P1 |
+| Phase 3 | 实现知识库验证机制和老化策略 | P2 |
+| Phase 4 | 开发收敛参数可视化调试工具 | P3 |
+
+---
+
+## 📝 2026-01-29 Session 工作记录
+
+### 本次完成的工作
+
+1. **创建 CLAUDE.md** - Claude Code 项目指导文件
+
+2. **需求覆盖评估** - 18点需求覆盖率达到 100%
+   - 补充 firmware_stack 枚举（ARM_TF、RTOS、UBOOT）
+   - 完善 FR-22 文档导入需求（Word、PDF、Excel）
+   - 新增 Claude Code Skills 集成设计
+
+3. **文档一致性修复** - 6个问题
+   - 构建流程归属冲突（CodeAgent vs 状态机）
+   - 收敛判定逻辑分裂
+   - KBAgent 缺失文档导入功能
+   - KnowledgeMetadata 结构不一致
+   - 补丁生成与应用粒度不匹配
+
+4. **架构设计优化** - 8个问题
+   - 新增安全架构（第9章）：SecretFilter、SAST、沙箱隔离
+   - 简化编排层：移除 CrewAI 双重编排，LangGraph 为唯一编排层
+   - 新增执行模式：INTERACTIVE/CI/AUTO 三种模式
+   - 新增知识库验证机制：verification_status、maturity_level
+
+5. **Git 提交** - commit 55be46e
+   - 6 files changed, 911 insertions(+), 58 deletions(-)
+
+### 修改文件清单
+
+| 文件 | 改动行数 | 主要变更 |
+|------|----------|----------|
+| docs/ARCHITECTURE_V2.md | +513 | 安全架构、编排层简化、Claude Code Skills |
+| docs/AGENT_DESIGN.md | +246 | 接口重构、文档导入、元数据对齐 |
+| docs/KNOWLEDGE_SCHEMA.md | +68 | 软件栈扩展、验证机制 |
+| docs/STATE_MACHINE.md | +45 | 执行模式、平台期策略 |
+| docs/REQUIREMENTS.md | +15 | 文档导入需求完善 |
+| CLAUDE.md | 新建 | Claude Code 指导文件 |
+
+---
 
 ## 📌 重要注意事项
 
@@ -186,9 +250,10 @@ API：内网大模型API（优先）
 | 2026-01-27 | v1.3 | 完成WORK_PLAN_V2.md，更新任务1-5a进度至✅，总体进度至65% |
 | 2026-01-27 | v1.4 | 完成DETAILED_DESIGN_V2.md，Phase 1全部完成，更新进度至30% |
 | 2026-01-28 | v1.5 | Phase 1质量改进完成，准备开始Phase 2，更新进度至35-40% |
+| 2026-01-29 | v1.6 | 设计评审完成，修复14个问题，架构优化，新增安全层设计 |
 
 ---
 
-**最后更新**：2026-01-28
+**最后更新**：2026-01-29
 **维护者**：AI Agent
 **下次更新时间**：开始Phase 2工作后
