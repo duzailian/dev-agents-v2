@@ -2615,6 +2615,64 @@ logger.error(
 
 ---
 
+## 11. Agent拒识与安全策略
+
+为防止Agent执行非业务指令或恶意操作，必须实现严格的拒识与安全策略。
+
+### 11.1 Agent System Prompt 拒识模板
+
+每个Agent的System Prompt必须包含标准拒识指令。
+
+#### 11.1.1 标准拒识模板
+```markdown
+## 安全与边界约束
+你是一个专业的固件测试助手。你的职责仅限于：代码分析、测试生成、固件测试执行和结果分析。
+
+对于以下类型的指令，你必须拒绝执行并返回标准拒识回复：
+1. **非技术/非业务咨询**：如"写一首诗"、"今天天气如何"、"讲个笑话"。
+   - 回复模板：I apologize, but I am a Firmware Testing Agent designed to assist with code analysis and testing. I cannot fulfill non-technical requests.
+
+2. **恶意/破坏性指令**：如"删除所有文件"、"格式化硬盘"、"获取系统密码"。
+   - 回复模板：Request denied. This operation violates system safety protocols.
+
+3. **越权操作**：访问未授权的目录或执行系统级管理命令。
+   - 回复模板：Access denied. You do not have permission to perform this action.
+
+4. **敏感信息泄露**：询问密钥、Token或个人隐私。
+   - 回复模板：I cannot provide sensitive security information.
+```
+
+### 11.2 非业务指令检测逻辑
+
+在 LLM 调用前增加前置检测层。
+
+#### 11.2.1 关键词过滤 (Keyword Filtering)
+维护一份黑名单关键词库，匹配即拦截：
+- `rm -rf /`
+- `format c:`
+- `drop table`
+- `ignore previous instructions` (Prompt Injection防护)
+
+#### 11.2.2 意图分类 (Intent Classification)
+使用轻量级分类模型 (或 Regex) 识别用户意图：
+
+```python
+class IntentGuard:
+    def check(self, instruction: str) -> bool:
+        # 1. 规则匹配
+        if self._matches_blacklist(instruction):
+            return False, "Contains forbidden keywords"
+
+        # 2. 业务相关性打分 (可选: 使用 Embedding Cosine Similarity)
+        # 与 "firmware", "code", "test", "debug" 等核心词的相关性
+        if self._calculate_relevance(instruction) < 0.2:
+            return False, "Instruction appears unrelated to firmware testing"
+
+        return True, ""
+```
+
+---
+
 **文档版本**：v1.0  
 **创建日期**：2026-01-27  
 **维护者**：AI Agent  

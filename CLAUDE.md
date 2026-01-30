@@ -4,79 +4,84 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AI-Driven Firmware Intelligent Testing System (AI驱动固件智能测试系统) - A multi-agent AI system that automates firmware testing by modifying C code, executing tests (QEMU/target boards), analyzing results, and iterating based on feedback.
+**AI-Driven Firmware Intelligent Testing System** (AI驱动固件智能测试系统)
+A multi-agent system that automates firmware testing by iterating through C code modification, test execution (QEMU/Target), and result analysis.
 
-**Current Status**: Phase 1 (Architecture & Design) completed. Phase 2 (Core Module Implementation) in progress. Source code in `src/` is planned but not yet implemented.
+- **Current Status**: Phase 2 (Core Module Implementation) starting. Architecture/Design (Phase 1) is complete.
+- **Primary Language**: Python (Orchestration/Agents), C (Target Firmware).
+- **Documentation Language**: Chinese (Main), English (Code comments/Protocol).
 
-## Tech Stack
+## Critical Protocol: Project Command Center
 
-- **Multi-Agent Coordination**: CrewAI
-- **State Machine**: LangGraph
-- **RAG Knowledge Base**: LangChain + Qdrant
-- **API Framework**: FastAPI
-- **Execution Engines**: CodeAnalyzer, CodeModifier, TestOrchestrator, ResultAnalyzer
+**ALWAYS** start your session by reading `docs/PROJECT_COMMAND_CENTER.md`.
+This file is the single source of truth for project status, active tasks, and context handoff.
+
+## Tech Stack & Architecture
+
+The system uses a **LangGraph-driven** architecture (Note: CrewAI orchestration was removed in V2).
+
+- **Orchestration**: LangGraph (State Machine & Workflow Control)
+- **Agent Runtime**: LangChain Agents
+- **Knowledge Base**: LangChain + Qdrant (RAG)
+- **Database**: PostgreSQL (Metadata), Qdrant (Vector)
+- **Execution Engines**:
+  - `CodeAnalyzer`: Tree-sitter based C analysis
+  - `CodeModifier`: AI-driven code patching
+  - `TestOrchestrator`: QEMU/BMC/Board runner
+  - `ResultAnalyzer`: Test log analysis
+- **Security**: SecretFilter, SAST (Semgrep), Docker Sandbox
 
 ## Commands
 
+### Setup
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Install package in development mode
+# Install package in editable mode
 pip install -e .
+```
 
-# Run tests
+### Development (Planned)
+```bash
+# Run tests (when implemented)
 pytest
 
-# Run single test
+# Run a specific test
 pytest tests/path/to/test_file.py::test_function_name
 
-# Run API server (once implemented)
+# Run the API server (FastAPI)
 uvicorn api.main:app --reload
 ```
 
-## Architecture
+## Directory Structure
 
-The system follows a layered architecture with four main execution engines:
-
-1. **CodeAnalyzer** - Analyzes firmware C code using tree-sitter
-2. **CodeModifier** - Applies AI-suggested code modifications
-3. **TestOrchestrator** - Manages test execution on QEMU or target boards (BMC, Raspberry Pi)
-4. **ResultAnalyzer** - Analyzes test results and decides whether to continue iteration
-
-Multi-agent workflow is coordinated by CrewAI with LangGraph managing state transitions.
+```text
+.
+├── config/              # Configuration files
+├── docs/                # Documentation (See Key Documentation below)
+├── src/ (Planned)
+│   ├── api/             # FastAPI endpoints
+│   ├── agents/          # Agent definitions (LangChain)
+│   ├── graph/           # LangGraph state machine definitions
+│   ├── executor/        # QEMU/Board adapters
+│   ├── knowledge/       # RAG system
+│   └── security/        # SecretFilter & Sandbox logic
+└── tests/ (Planned)     # Unit and Integration tests
+```
 
 ## Key Documentation
 
-Start with `docs/PROJECT_COMMAND_CENTER.md` for project status and next steps.
+| File | Description |
+|------|-------------|
+| `docs/PROJECT_COMMAND_CENTER.md` | **Read First**. Status, tasks, and handoff. |
+| `docs/ARCHITECTURE_V2.md` | System architecture (Layers 1-7). |
+| `docs/DETAILED_DESIGN_V2.md` | Implementation details. |
+| `docs/PHASE_2_TASK_BREAKDOWN.md` | Tasks for the current implementation phase. |
 
-| Document | Purpose |
-|----------|---------|
-| `docs/PROJECT_COMMAND_CENTER.md` | Project status, progress tracking, session handoff |
-| `docs/DETAILED_DESIGN_V2.md` | Comprehensive detailed design |
-| `docs/ARCHITECTURE_V2.md` | System architecture |
-| `docs/AGENT_DESIGN.md` | Agent specifications |
-| `docs/STATE_MACHINE.md` | State machine design |
-| `docs/KNOWLEDGE_SCHEMA.md` | RAG knowledge base schema |
-| `docs/PHASE_2_TASK_BREAKDOWN.md` | Current phase task breakdown |
+## Development Guidelines
 
-## Planned Source Structure
-
-```
-src/
-├── api/          # FastAPI REST endpoints
-├── agents/       # CrewAI agent definitions
-├── executor/     # Test environment adapters (QEMU, target boards)
-├── knowledge/    # RAG and Qdrant integration
-├── models/       # Domain models
-├── tools/        # Agent tool implementations
-├── config/       # Configuration handlers
-└── utils/        # Shared utilities
-```
-
-## Development Notes
-
-- Documentation is primarily in Chinese
-- Internal LLM API is prioritized over external APIs
-- Supports multiple test environments: QEMU, BMC, Raspberry Pi, Windows scripts
-- Knowledge base supports product-line differentiation via tagging
+1.  **Architecture Alignment**: Follow `ARCHITECTURE_V2.md` strictly. Use LangGraph for flow control, not CrewAI.
+2.  **Security First**: All code execution must happen in sandboxes. No secrets in logs.
+3.  **Documentation**: Update documentation in `docs/` when design changes.
+4.  **Testing**: Write tests for all new modules.
