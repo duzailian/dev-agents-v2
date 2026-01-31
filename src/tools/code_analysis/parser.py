@@ -1,234 +1,201 @@
 import os
-from pathlib import Path
-from typing import Dict, List, Optional
-from src.models.code import CodeAnalysis, CodeMetrics, CodeLocation, CodeIssue, IssueType, IssueSeverity
+from typing import List, Dict, Any, Optional
+from tree_sitter import Language, Parser, Tree, Node, Query
+import tree_sitter_c as tsc
+import tree_sitter_cpp as tscpp
+from src.models.code import FunctionNode, Location
 
-try:
-    from tree_sitter import Language, Parser, Node
-except ImportError:
-    Language = None
-    Parser = None
-    Node = None
+class TreeSitterParser:
+    """Tree-sitter parser wrapper for C/C++"""
 
-class TreeSitterCodeParser:
+    LANGUAGE_MAP = {
+        "c": "c",
+        "cpp": "cpp",
+        "c++": "cpp",
+        "h": "c",  # Default .h to C, though could be C++
+        "hpp": "cpp"
+    }
+
+    # C/C++ function definition query
+    # Captures return type, name, parameters, and body
+    FUNCTION_QUERY = """
+    (function_definition
+      type: (_) @return_type
+      declarator: (function_declarator
+        declarator: (identifier) @name
+        parameters: (parameter_list) @params)
+      body: (compound_statement) @body) @function
     """
-    Parser for C/C++ code using tree-sitter.
 
-    This class handles parsing of source files to extract metrics and structure.
-    It requires tree-sitter language libraries to be compiled and available.
+    # Function call query
+    CALL_QUERY = """
+    (call_expression
+      function: (identifier) @callee
+      arguments: (argument_list) @args) @call
     """
 
-    def __init__(self, build_dir: str = "build", vendor_dir: str = "vendor"):
+    def __init__(self, language: str = "c"):
         """
-        Initialize the parser.
+        Initialize the parser for a specific language.
 
         Args:
-            build_dir: Directory containing the compiled language libraries (languages.so/dll)
-            vendor_dir: Directory containing tree-sitter grammar repositories
+            language: "c" or "cpp"
         """
-        self.build_dir = build_dir
-        self.vendor_dir = vendor_dir
+        self.lang_name = self.LANGUAGE_MAP.get(language.lower())
 
-        # Determine library extension based on OS
-        lib_ext = "dll" if os.name == "nt" else "so"
-        self.lib_file = os.path.join(build_dir, f"languages.{lib_ext}")
+        if self.lang_name == "c":
+            self.language = Language(tsc.language(), "c")
+        elif self.lang_name == "cpp":
+            self.language = Language(tscpp.language(), "cpp")
+        else:
+            raise ValueError(f"Unsupported language: {language}")
 
-        self.languages: Dict[str, Language] = {}
-        self.parser: Optional[Parser] = None
+        self.parser = Parser()
+        self.parser.set_language(self.language)
 
-        if Parser:
-            self.parser = Parser()
-            self._initialize_languages()
-
-    def _initialize_languages(self):
-        """Initialize tree-sitter languages."""
-
-        # Mapping extension to language name
-        self.ext_map = {
-            '.c': 'c',
-            '.h': 'c',
-            '.cpp': 'cpp',
-            '.hpp': 'cpp',
-            '.cc': 'cpp',
-            '.cxx': 'cpp',
-            '.hh': 'cpp'
-        }
-
-        # Check if library exists
-        if not os.path.exists(self.lib_file):
-            # We don't raise an error here to allow the parser to work in "text-only" mode
-            # if the binaries aren't built yet.
-            return
-
-        try:
-            # Attempt to load C
-            self.languages['c'] = Language(self.lib_file, 'c')
-            # Attempt to load C++
-            self.languages['cpp'] = Language(self.lib_file, 'cpp')
-        except Exception as e:
-            # Log error but don't crash
-            print(f"Warning: Failed to load tree-sitter languages: {e}")
-
-    def parse_file(self, file_path: str) -> CodeAnalysis:
+    def parse(self, code: str) -> Tree:
         """
-        Parse a file and return a CodeAnalysis object.
+        Parse source code into an AST.
 
         Args:
-            file_path: Absolute path to the file to parse
+            code: Source code string
 
         Returns:
-            CodeAnalysis object populated with metrics and issues
+            Tree: Tree-sitter AST
         """
-        path = Path(file_path)
-        if not path.exists():
-            # If file doesn't exist, return empty analysis with error?
-            # Or raise? The requirements say "Handle errors gracefully".
-            # Returning an object with an error issue seems appropriate.
-            return CodeAnalysis(
-                target_files=[file_path],
-                issues=[CodeIssue(
-                    title="File not found",
-                    description=f"File does not exist: {file_path}",
-                    severity=IssueSeverity.CRITICAL,
-                    issue_type=IssueType.UNKNOWN
-                )]
-            )
+        return self.parser.parse(bytes(code, "utf8"))
 
-        # Basic file stats
-        try:
-            with open(path, 'r', encoding='utf-8', errors='replace') as f:
-                content = f.read()
-        except Exception as e:
-            return CodeAnalysis(
-                target_files=[file_path],
-                issues=[CodeIssue(
-                    title="Read Error",
-                    description=str(e),
-                    severity=IssueSeverity.CRITICAL,
-                    issue_type=IssueType.UNKNOWN
-                )]
-            )
-
-        lines = content.splitlines()
-        loc = len(lines)
-
-        # Initialize metrics
-        metrics = CodeMetrics(
-            lines_of_code=loc,
-            function_count=0,
-            class_count=0,
-            cyclomatic_complexity=0, # Placeholder
-            cognitive_complexity=0   # Placeholder
-        )
-
-        analysis = CodeAnalysis(
-            target_files=[file_path],
-            metrics=metrics,
-            issues=[]
-        )
-
-        # If parser setup failed or no suitable language, return basic metrics
-        if not self.parser or not self.languages:
-            return analysis
-
-        # Determine language
-        ext = path.suffix.lower()
-        lang_name = self.ext_map.get(ext)
-
-        if not lang_name or lang_name not in self.languages:
-            return analysis
-
-        # Parse
-        lang = self.languages[lang_name]
-        self.parser.set_language(lang)
-
-        try:
-            # Tree-sitter 0.21.x parse returns a Tree
-            tree = self.parser.parse(bytes(content, "utf8"))
-            root_node = tree.root_node
-
-            # Analyze tree structure
-            self._analyze_tree(root_node, metrics, lang_name)
-
-            # Check for syntax errors
-            if root_node.has_error:
-                self._find_errors(root_node, analysis, file_path)
-
-        except Exception as e:
-            analysis.issues.append(CodeIssue(
-                title="Parsing Error",
-                description=str(e),
-                severity=IssueSeverity.HIGH,
-                issue_type=IssueType.UNKNOWN
-            ))
-
-        return analysis
-
-    def _analyze_tree(self, node: Node, metrics: CodeMetrics, lang_name: str):
-        """Recursively analyze the tree to update metrics."""
-
-        node_type = node.type
-
-        # Function definitions
-        if node_type == 'function_definition':
-            metrics.function_count += 1
-
-        # C++ specific
-        if lang_name == 'cpp':
-            if node_type in ['class_specifier', 'struct_specifier']:
-                metrics.class_count += 1
-
-        # Traverse children
-        for child in node.children:
-            self._analyze_tree(child, metrics, lang_name)
-
-    def _find_errors(self, node: Node, analysis: CodeAnalysis, file_path: str):
-        """Find syntax errors in the tree."""
-        if node.type == 'ERROR':
-            # Create an issue
-            issue = CodeIssue(
-                issue_type=IssueType.COMPILATION_ERROR,
-                severity=IssueSeverity.HIGH,
-                title="Syntax Error",
-                description=f"Syntax error found near line {node.start_point[0]+1}",
-                location=CodeLocation(
-                    file_path=file_path,
-                    line_start=node.start_point[0]+1,
-                    line_end=node.end_point[0]+1,
-                    column_start=node.start_point[1],
-                    column_end=node.end_point[1]
-                )
-            )
-            analysis.issues.append(issue)
-            # Avoid too many errors from the same subtree
-            return
-
-        for child in node.children:
-            self._find_errors(child, analysis, file_path)
-
-    def build_languages(self):
+    def query(self, tree: Tree, pattern: str) -> Dict[str, List[Node]]:
         """
-        Helper to build languages if needed.
-        Requires 'tree-sitter-c' and 'tree-sitter-cpp' in the vendor directory.
+        Execute a query pattern on the AST.
+
+        Args:
+            tree: AST to query
+            pattern: S-expression query pattern
+
+        Returns:
+            Dict mapping capture names to lists of Nodes
         """
-        if not Language:
-            print("Tree-sitter module not loaded.")
-            return
+        query = self.language.query(pattern)
+        captures = query.captures(tree.root_node)
 
-        # Check for vendor directories
-        c_path = os.path.join(self.vendor_dir, 'tree-sitter-c')
-        cpp_path = os.path.join(self.vendor_dir, 'tree-sitter-cpp')
+        # In 0.21.3, captures returns a list of tuples: [(Node, capture_name), ...]
+        results = {}
+        for node, name in captures:
+            if name not in results:
+                results[name] = []
+            results[name].append(node)
 
-        if not os.path.exists(c_path) or not os.path.exists(cpp_path):
-            print(f"Language repositories not found in {self.vendor_dir}. Please clone tree-sitter-c and tree-sitter-cpp.")
-            return
+        return results
 
-        os.makedirs(self.build_dir, exist_ok=True)
-        try:
-            Language.build_library(
-                self.lib_file,
-                [c_path, cpp_path]
+    def extract_functions(self, code: str, file_path: str = "") -> List[FunctionNode]:
+        """
+        Extract function definitions from code.
+
+        Args:
+            code: Source code
+            file_path: Path to the file (for location info)
+
+        Returns:
+            List[FunctionNode]: Extracted functions
+        """
+        tree = self.parse(code)
+        query = self.language.query(self.FUNCTION_QUERY)
+        matches = query.matches(tree.root_node)
+
+        functions = []
+
+        for match in matches:
+            # Match structure in 0.21.3: (pattern_index, captures_dict)
+            # captures_dict maps name -> Node (or list of Nodes if multiple matches)
+
+            captures = {}
+            if isinstance(match, tuple) and len(match) >= 2:
+                 captures = match[1]
+            else:
+                 continue
+
+            # Helper to safely get a single node
+            def get_node(name):
+                val = captures.get(name)
+                if isinstance(val, list):
+                    return val[0] if val else None
+                return val
+
+            # Helper to get text from node
+            def get_text(node: Node) -> str:
+                return code[node.start_byte:node.end_byte]
+
+            name_node = get_node('name')
+            return_type_node = get_node('return_type')
+            params_node = get_node('params')
+            body_node = get_node('body')
+            function_node = get_node('function')
+
+            if not (name_node and function_node):
+                continue
+
+            # Location info
+            loc = Location(
+                file_path=file_path,
+                line=function_node.start_point[0] + 1, # 1-based
+                column=function_node.start_point[1] + 1,
+                end_line=function_node.end_point[0] + 1,
+                end_column=function_node.end_point[1] + 1
             )
-            print(f"Built languages to {self.lib_file}")
-        except Exception as e:
-            print(f"Failed to build languages: {e}")
+
+            # Simple parameter parsing
+            params_text = get_text(params_node) if params_node else ""
+            parameters = [{"raw": params_text}]
+
+            func = FunctionNode(
+                name=get_text(name_node),
+                location=loc,
+                return_type=get_text(return_type_node) if return_type_node else "void",
+                parameters=parameters,
+                body_start=body_node.start_byte if body_node else 0,
+                body_end=body_node.end_byte if body_node else 0,
+                docstring=None
+            )
+
+            functions.append(func)
+
+        return functions
+
+    def extract_calls(self, code: str) -> List[Dict[str, Any]]:
+        """
+        Extract function calls.
+
+        Returns:
+            List of dicts with 'callee', 'args', 'location'
+        """
+        tree = self.parse(code)
+        query = self.language.query(self.CALL_QUERY)
+        matches = query.matches(tree.root_node)
+
+        calls = []
+        for match in matches:
+            captures = {}
+            if isinstance(match, tuple) and len(match) >= 2:
+                 captures = match[1]
+
+            # Helper to safely get a single node
+            def get_node(name):
+                val = captures.get(name)
+                if isinstance(val, list):
+                    return val[0] if val else None
+                return val
+
+            callee_node = get_node('callee')
+            args_node = get_node('args')
+
+            if not callee_node:
+                continue
+
+            calls.append({
+                "callee": code[callee_node.start_byte:callee_node.end_byte],
+                "args": code[args_node.start_byte:args_node.end_byte] if args_node else "",
+                "line": callee_node.start_point[0] + 1
+            })
+
+        return calls
