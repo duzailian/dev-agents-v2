@@ -36,6 +36,7 @@ from src.models.code import (
 from src.tools.code_analysis.parser import TreeSitterParser
 from src.tools.code_analysis.symbol_table import SymbolTable
 from src.tools.code_analysis.call_graph import CallGraph
+from src.tools.code_analysis.static_analyzers import ClangTidyAnalyzer, CppcheckAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,16 @@ class CodeAnalyzer:
         self.parser = self._parsers["c"]
         self.symbol_table = SymbolTable()
         self.call_graph = CallGraph()
-        self.static_analyzers = [] # Placeholder for future integrations
+        self.static_analyzers = []
+
+        # Initialize static analyzers based on config
+        if self.config.static_analyzers:
+            for tool_name in self.config.static_analyzers:
+                if tool_name == "clang-tidy":
+                    self.static_analyzers.append(ClangTidyAnalyzer())
+                elif tool_name == "cppcheck":
+                    self.static_analyzers.append(CppcheckAnalyzer())
+
         self.llm_client = None # Placeholder for LLM client
         self._cache = {} if config.enable_caching else None
 
