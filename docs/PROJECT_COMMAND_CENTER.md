@@ -1,5 +1,7 @@
 # AI驱动固件智能测试系统 - 项目指挥部
 
+> 文档版本：v2.0
+>
 > 项目指挥部文件用于记录所有关键信息，确保跨session无缝衔接
 > 每次session开始时，首先阅读此文件了解项目现状
 
@@ -155,6 +157,9 @@ API：内网大模型API（优先）
 - docs/STATE_MACHINE.md ✅
 - docs/WORK_PLAN_V2.md ✅
 - docs/DETAILED_DESIGN_V2.md ✅
+- docs/ADR.md ✅ （新增：架构决策记录）
+- docs/API_SPEC.md ✅
+- docs/CONFIG_MANAGEMENT.md ✅
 
 **进度追踪**：
 - docs/PROJECT_COMMAND_CENTER.md （本文件）
