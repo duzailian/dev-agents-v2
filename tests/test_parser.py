@@ -1,6 +1,6 @@
 import pytest
 import os
-from src.tools.code_analysis.parsers import TreeSitterParser
+from src.tools.code_analysis.parser import TreeSitterParser
 from src.models.code import FunctionNode
 
 # Sample C code for testing
