@@ -193,6 +193,22 @@
 - 支持简单的归因分析
 - 提供分析结果的结构化输出
 
+### 3.4 Phase 2 执行注意事项 (基于文档审核)
+
+根据 2026-01-31 完成的文档审核，在 Phase 2 开发中需严格执行以下准则：
+
+1. **代码与设计的一致性控制**
+   - **风险**：`src/agents/` 现有脚手架较为简单，开发时容易偏离 `DETAILED_DESIGN_V2.md` 定义的详尽接口。
+   - **措施**：在 Task 2-1 启动时，必须严格照搬设计文档中的类图（如 `CodeAnalyzer`）和接口定义生成代码，禁止随意简化。
+
+2. **LangGraph 集成优先验证**
+   - **风险**：LangGraph 的状态持久化（Checkpointing）和人工介入（Human-in-the-loop）机制较复杂。
+   - **措施**：将 **Task 2-0-1 (LangGraph POC)** 列为最高优先级。若验证失败，需立即调整 `STATE_MACHINE.md`。
+
+3. **文档与代码同步更新**
+   - **风险**：开发进度快于文档更新，导致文档再次过时。
+   - **措施**：执行"文档驱动开发"（Documentation Driven Development），代码变更需同步更新 `API_SPEC.md` 和 `DETAILED_DESIGN_V2.md`。
+
 ---
 
 ## 4. Phase 3 详细计划
@@ -749,17 +765,17 @@ Phase 3 开始前
 ### 12.8 文档改进验收标准
 
 **P0级验收标准**：
-- [ ] DETAILED_DESIGN_V2.md 扩展至800-1000行
-- [ ] DETAILED_DESIGN_V2.md 包含所有核心引擎的类图和时序图
-- [ ] API_SPEC.md 符合OpenAPI 3.0规范
-- [ ] API_SPEC.md 包含完整的请求/响应示例
-- [ ] API_SPEC.md 包含错误码体系和认证规范
+- [x] DETAILED_DESIGN_V2.md 扩展至800-1000行
+- [x] DETAILED_DESIGN_V2.md 包含所有核心引擎的类图和时序图
+- [x] API_SPEC.md 符合OpenAPI 3.0规范
+- [x] API_SPEC.md 包含完整的请求/响应示例
+- [x] API_SPEC.md 包含错误码体系和认证规范
 
 **P1级验收标准**：
-- [ ] REQUIREMENTS.md 包含完整的TR和KR章节
-- [ ] AGENT_DESIGN.md KBAgent章节扩展至与其他Agent同等详细程度
-- [ ] PHASE_2_TASK_BREAKDOWN.md 包含POC验证任务
-- [ ] STATE_MACHINE.md 无重复定义
+- [x] REQUIREMENTS.md 包含完整的TR和KR章节
+- [x] AGENT_DESIGN.md KBAgent章节扩展至与其他Agent同等详细程度
+- [x] PHASE_2_TASK_BREAKDOWN.md 包含POC验证任务
+- [x] STATE_MACHINE.md 无重复定义
 
 **P2级验收标准**：
 - [ ] 大型文档拆分完成
