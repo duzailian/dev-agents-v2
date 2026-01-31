@@ -73,12 +73,25 @@ class CodeAnalyzer:
             config: Analyzer configuration
         """
         self.config = config
-        self.parser = TreeSitterParser() # Initialize default parser
+        # Create parsers for both C and C++
+        self._parsers = {
+            "c": TreeSitterParser("c"),
+            "cpp": TreeSitterParser("cpp")
+        }
+        # Keep a default parser for backward compatibility
+        self.parser = self._parsers["c"]
         self.symbol_table = SymbolTable()
         self.call_graph = CallGraph()
         self.static_analyzers = [] # Placeholder for future integrations
         self.llm_client = None # Placeholder for LLM client
         self._cache = {} if config.enable_caching else None
+
+    def _get_parser(self, language: str) -> TreeSitterParser:
+        """Get the appropriate parser for the language."""
+        lang_key = language.lower()
+        if lang_key not in self._parsers:
+            lang_key = "c"  # Default to C
+        return self._parsers[lang_key]
 
     async def analyze_files(
         self,
@@ -102,7 +115,7 @@ class CodeAnalyzer:
         # 1. Analyze each file
         for file_path in file_paths:
             try:
-                # Basic analysis (parsing, metrics, symbols)
+                # Basic analysis (parsing, metrics, symbols) - includes static analysis via _run_static_analysis_on_file
                 file_analysis = await self.analyze_single_file(file_path)
                 file_analyses.append(file_analysis)
                 all_issues.extend(file_analysis.issues)
@@ -131,12 +144,7 @@ class CodeAnalyzer:
                 ))
                 all_issues.append(error_issue)
 
-        # 2. Run Static Analysis (if configured and requested)
-        if analysis_type in [AnalysisType.STATIC, AnalysisType.FULL] and self.static_analyzers:
-            static_issues = await self.run_static_analysis(file_paths)
-            all_issues.extend(static_issues)
-
-        # 3. AI Analysis (if configured and requested)
+        # 2. AI Analysis (if configured and requested)
         # This is a placeholder for where AI analysis would hook in
         if analysis_type in [AnalysisType.AI, AnalysisType.FULL] and self.llm_client:
              ai_issues = await self.run_ai_analysis(file_paths)
@@ -227,6 +235,105 @@ class CodeAnalyzer:
             AnalysisReport: Analysis report for the file
         """
         return await self.analyze_files([file_path])
+
+    async def analyze_single_file(self, file_path: str) -> FileAnalysis:
+        """
+        Analyze a single file and return FileAnalysis result.
+
+        This is the core analysis method that performs:
+        1. File parsing with TreeSitter
+        2. Metrics calculation
+        3. Function and symbol extraction
+        4. Include extraction
+
+        Args:
+            file_path: Path to the file
+
+        Returns:
+            FileAnalysis: Analysis result for the single file
+        """
+        # Check if file exists
+        if not Path(file_path).exists():
+            return FileAnalysis(
+                file_path=file_path,
+                language="unknown",
+                issues=[Issue(
+                    rule_id="file_not_found",
+                    severity="error",
+                    message=f"File not found: {file_path}",
+                    location=Location(file_path, 0, 0)
+                )],
+                metrics=CodeMetrics(0, 0, 0, 0, 0, 0),
+                functions=[],
+                symbols=[],
+                includes=[],
+                ast_hash=""
+            )
+
+        # Determine language from extension
+        ext = Path(file_path).suffix.lower()
+        language = "cpp" if ext in ['.cpp', '.hpp', '.cc', '.cxx', '.hxx'] else "c"
+
+        try:
+            # Read file content
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                code = f.read()
+
+            # Get the appropriate parser for this language
+            parser = self._get_parser(language)
+
+            # Parse with TreeSitter
+            ast = parser.parse(code)
+
+            # Extract functions
+            functions = parser.extract_functions(code, file_path)
+
+            # Extract calls
+            calls = parser.extract_calls(code)
+
+            # Calculate metrics
+            metrics = self._calculate_metrics(code, functions)
+
+            # Extract symbols
+            symbols = self._extract_symbols(code, language=language)
+
+            # Extract includes
+            includes = self._extract_includes(code)
+
+            # Generate AST hash for caching (use tree string representation)
+            ast_hash = str(hash(ast.root_node.text.decode() if ast.root_node.text else "")) if ast and ast.root_node else ""
+
+            # Run static analysis on this file
+            issues = await self._run_static_analysis_on_file(file_path)
+
+            return FileAnalysis(
+                file_path=file_path,
+                language=language,
+                functions=functions,
+                symbols=symbols,
+                includes=includes,
+                metrics=metrics,
+                issues=issues,
+                ast_hash=ast_hash
+            )
+
+        except Exception as e:
+            logger.error(f"Error analyzing {file_path}: {e}")
+            return FileAnalysis(
+                file_path=file_path,
+                language=language,
+                issues=[Issue(
+                    rule_id="analysis_error",
+                    severity="error",
+                    message=str(e),
+                    location=Location(file_path, 0, 0)
+                )],
+                metrics=CodeMetrics(0, 0, 0, 0, 0, 0),
+                functions=[],
+                symbols=[],
+                includes=[],
+                ast_hash=""
+            )
 
     async def analyze_directory(self, directory: str) -> Dict[str, Any]:
         """
@@ -371,3 +478,99 @@ class CodeAnalyzer:
 
         error_count = sum(1 for i in issues if str(i.severity).lower() in ['error', 'critical', 'high'])
         return f"Analyzed {file_count} files. Found {len(issues)} issues ({error_count} errors)."
+
+    async def _run_static_analysis_on_file(self, file_path: str) -> List[Issue]:
+        """Run all registered static analyzers on a single file."""
+        issues = []
+        for tool in self.static_analyzers:
+            try:
+                if asyncio.iscoroutinefunction(tool.analyze):
+                    tool_issues = await tool.analyze(file_path)
+                else:
+                    tool_issues = tool.analyze(file_path)
+
+                if tool_issues:
+                    issues.extend(tool_issues)
+            except Exception as e:
+                logger.error(f"Static analyzer failed on {file_path}: {e}")
+                issues.append(Issue(
+                    rule_id="tool_error",
+                    severity="error",
+                    message=f"Static analyzer failed: {e}",
+                    location=Location(file_path, 0, 0)
+                ))
+        return issues
+
+    def _calculate_metrics(self, code: str, functions: List[FunctionNode]) -> CodeMetrics:
+        """Calculate code metrics for the given code and functions."""
+        lines = code.splitlines()
+        lines_of_code = len([l for l in lines if l.strip() and not l.strip().startswith('//') and not l.strip().startswith('/*')])
+        lines_of_comments = len([l for l in lines if l.strip().startswith('//') or l.strip().startswith('/*')])
+
+        # Calculate cyclomatic complexity (simplified: 1 + number of decision points)
+        complexity = 1
+        for char in code:
+            if char in ['{', '?', '&', '|', '^']:
+                complexity += 1
+
+        # Max nesting depth (simplified: max consecutive braces)
+        max_nesting = 0
+        current_nesting = 0
+        for char in code:
+            if char == '{':
+                current_nesting += 1
+                max_nesting = max(max_nesting, current_nesting)
+            elif char == '}':
+                current_nesting -= 1
+
+        return CodeMetrics(
+            lines_of_code=lines_of_code,
+            lines_of_comments=lines_of_comments,
+            cyclomatic_complexity=complexity,
+            cognitive_complexity=complexity,  # Simplified: same as cyclomatic
+            function_count=len(functions),
+            max_nesting_depth=max_nesting,
+            maintainability_index=100.0  # Simplified calculation
+        )
+
+    def _extract_symbols(self, code: str, language: str) -> List[Symbol]:
+        """Extract symbols from code."""
+        symbols = []
+
+        # Simple regex-based symbol extraction (can be enhanced with AST)
+        import re
+
+        # Extract function declarations/definitions
+        func_pattern = r'(?:static\s+)?(?:inline\s+)?(\w+)\s+(\w+)\s*\(([^)]*)\)'
+        for match in re.finditer(func_pattern, code):
+            return_type = match.group(1)
+            name = match.group(2)
+            params = match.group(3)
+
+            # Find line number
+            line_num = code[:match.start()].count('\n') + 1
+
+            symbols.append(Symbol(
+                name=name,
+                kind="function",
+                location=Location(file_path="", line=line_num, column=1),
+                scope="global",
+                type_info=return_type
+            ))
+
+        # Extract variable declarations (simplified)
+        var_pattern = r'\b(int|char|float|double|void|bool|long|short|unsigned|signed|struct|enum|typedef)\s+(\w+)\s*[;=,]'
+        for match in re.finditer(var_pattern, code):
+            var_type = match.group(1)
+            name = match.group(2)
+            line_num = code[:match.start()].count('\n') + 1
+
+            symbols.append(Symbol(
+                name=name,
+                kind="variable",
+                location=Location(file_path="", line=line_num, column=1),
+                scope="global",
+                type_info=var_type
+            ))
+
+        return symbols

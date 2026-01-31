@@ -1,6 +1,6 @@
 import os
 from typing import List, Dict, Any, Optional
-from tree_sitter import Language, Parser, Tree, Node, Query
+from tree_sitter import Language, Parser, Tree, Node, Query, QueryCursor
 import tree_sitter_c as tsc
 import tree_sitter_cpp as tscpp
 from src.models.code import FunctionNode, Location
@@ -44,14 +44,13 @@ class TreeSitterParser:
         self.lang_name = self.LANGUAGE_MAP.get(language.lower())
 
         if self.lang_name == "c":
-            self.language = Language(tsc.language(), "c")
+            self.language = Language(tsc.language())
+            self.parser = Parser(self.language)
         elif self.lang_name == "cpp":
-            self.language = Language(tscpp.language(), "cpp")
+            self.language = Language(tscpp.language())
+            self.parser = Parser(self.language)
         else:
             raise ValueError(f"Unsupported language: {language}")
-
-        self.parser = Parser()
-        self.parser.set_language(self.language)
 
     def parse(self, code: str) -> Tree:
         """
@@ -100,8 +99,9 @@ class TreeSitterParser:
             List[FunctionNode]: Extracted functions
         """
         tree = self.parse(code)
-        query = self.language.query(self.FUNCTION_QUERY)
-        matches = query.matches(tree.root_node)
+        query = Query(self.language, self.FUNCTION_QUERY)
+        cursor = QueryCursor(query)
+        matches = cursor.matches(tree.root_node)
 
         functions = []
 
@@ -170,8 +170,9 @@ class TreeSitterParser:
             List of dicts with 'callee', 'args', 'location'
         """
         tree = self.parse(code)
-        query = self.language.query(self.CALL_QUERY)
-        matches = query.matches(tree.root_node)
+        query = Query(self.language, self.CALL_QUERY)
+        cursor = QueryCursor(query)
+        matches = cursor.matches(tree.root_node)
 
         calls = []
         for match in matches:

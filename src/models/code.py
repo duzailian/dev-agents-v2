@@ -11,6 +11,7 @@ class AnalysisType(Enum):
     METRICS = "metrics"          # 度量分析
     STATIC = "static"            # 静态检查
     SEMANTIC = "semantic"        # 语义分析
+    AI = "ai"                    # AI分析
     FULL = "full"                # 完整分析
 
 class IssueSeverity(Enum):
