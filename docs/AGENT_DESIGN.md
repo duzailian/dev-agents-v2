@@ -290,43 +290,376 @@ class KBAgent:
             return {"messages": ["Knowledge captured"]}
         return {}
 
-### 5.3 RAG检索流程
+### 5.3 RAG检索流程详细设计
 
+#### 5.3.1 检索架构
+
+```mermaid
+graph TD
+    subgraph "检索请求"
+        Query[查询请求] --> Preprocess[预处理]
+    end
+    
+    subgraph "检索引擎"
+        Preprocess --> Vectorize[向量化]
+        Vectorize --> Search[向量搜索]
+        Search --> Hybrid[混合检索]
+        Hybrid --> Rerank[重排序]
+    end
+    
+    subgraph "后处理"
+        Rerank --> Context[上下文构建]
+        Context --> Filter[过滤增强]
+        Filter --> Result[检索结果]
+    end
+    
+    Query -.->|同步调用| Result
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    RAG检索流程                               │
-├─────────────────────────────────────────────────────────────┤
-│  1. 接收查询请求（来自其他Agent或用户）                        │
-│  2. 查询预处理（分词、实体提取、意图识别）                      │
-│  3. 向量化查询（使用Embedding模型）                           │
-│  4. Qdrant向量检索（TopK + 阈值过滤）                         │
-│  5. 混合检索（关键词 + 语义 + 产品线过滤）                     │
-│  6. 结果重排序（基于相关性和时效性）                           │
-│  7. 上下文构建（格式化为LLM可理解的上下文）                     │
-│  8. 返回检索结果                                             │
-└─────────────────────────────────────────────────────────────┘
+
+#### 5.3.2 检索步骤详解
+
+```python
+class KBAgent:
+    """知识库管理专家"""
+    
+    def __init__(self, config: KBAgentConfig):
+        self.vector_db = QdrantClient(
+            host=config.qdrant_host,
+            port=config.qdrant_port
+        )
+        self.metadata_db = PostgreSQLClient(config.postgres_url)
+        self.embedding_service = EmbeddingService(
+            model=config.embedding_model,
+            dimension=config.embedding_dim
+        )
+        self.reranker = CrossEncoderReranker()
+        self.cache = RedisCache(config.redis_url)
+    
+    async def retrieve(
+        self,
+        query: str,
+        context: RetrievalContext
+    ) -> List[KnowledgeUnit]:
+        """
+        知识检索主流程
+        
+        Args:
+            query: 自然语言查询
+            context: 检索上下文（产品线、标签、时间范围等）
+            
+        Returns:
+            排序后的知识单元列表
+        """
+        # 1. 查询预处理
+        preprocessed = await self._preprocess_query(query)
+        
+        # 2. 查询向量化
+        query_vector = await self.embedding_service.embed(preprocessed)
+        
+        # 3. 缓存检查（避免重复检索）
+        cache_key = self._generate_cache_key(query_vector, context)
+        cached = await self.cache.get(cache_key)
+        if cached:
+            return cached
+        
+        # 4. 多路检索
+        results = await self._multi_modal_search(
+            query_vector=query_vector,
+            context=context
+        )
+        
+        # 5. 结果重排序
+        reranked = await self._rerank(query, results, context)
+        
+        # 6. 上下文构建
+        enhanced = await self._build_context(reranked, context)
+        
+        # 7. 缓存结果
+        await self.cache.set(cache_key, enhanced, ttl=300)
+        
+        return enhanced
+    
+    async def _preprocess_query(self, query: str) -> str:
+        """查询预处理：分词、实体提取、意图识别"""
+        # 实体提取
+        entities = await self._extract_entities(query)
+        
+        # 查询扩展（添加同义词和相关术语）
+        expanded = await self._expand_query(query, entities)
+        
+        return expanded
+    
+    async def _multi_modal_search(
+        self,
+        query_vector: List[float],
+        context: RetrievalContext
+    ) -> List[SearchResult]:
+        """多路检索：向量 + 关键词 + 产品线过滤"""
+        tasks = [
+            # 向量检索
+            self._vector_search(query_vector, context),
+            # 关键词检索
+            self._keyword_search(context.query, context),
+            # 元数据筛选
+            self._metadata_filter(context.filters)
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # 合并结果去重
+        merged = self._merge_results(results)
+        
+        return merged
+    
+    async def _rerank(
+        self,
+        query: str,
+        results: List[KnowledgeUnit],
+        context: RetrievalContext
+    ) -> List[KnowledgeUnit]:
+        """结果重排序：基于相关性和时效性"""
+        if not results:
+            return []
+        
+        # 使用CrossEncoder进行细粒度排序
+        query_doc_pairs = [
+            (query, unit.content.description) for unit in results
+        ]
+        scores = await self.reranker.predict(query_doc_pairs)
+        
+        # 融合原始分数和新分数
+        scored = list(zip(results, scores))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        
+        return [unit for unit, _ in scored[:context.max_results]]
 ```
 
-### 5.4 知识沉淀机制
+#### 5.3.3 检索参数配置
 
-**触发条件**:
-- 任务成功完成（next_action == "finish" 且 all_passed == True）
-- 人工标记为有价值的失败案例
-- 达到可配置的沉淀阈值（如连续3次相似修复）
+```python
+@dataclass
+class RetrievalContext:
+    """检索上下文"""
+    query: str
+    product_line: Optional[ProductLine] = None
+    tags: List[str] = None
+    time_range: Optional[Tuple[datetime, datetime]] = None
+    min_confidence: float = 0.5
+    max_results: int = 10
+    include_expired: bool = False
+    
+    def __post_init__(self):
+        if self.tags is None:
+            self.tags = []
+```
 
-**沉淀内容**:
-- 输入：代码diff、问题描述、环境配置
-- 过程：修改建议、测试计划、迭代历史
-- 输出：最终修复、根因分析、经验总结
+### 5.4 知识沉淀机制详细设计
+
+#### 5.4.1 沉淀触发条件
+
+KBAgent支持多种知识沉淀触发条件：
+
+| 触发类型 | 条件 | 优先级 | 说明 |
+|----------|------|--------|------|
+| 成功完成 | next_action == "finish" 且 all_passed == True | P0 | 任务完全成功 |
+| 部分成功 | 修复率 > 50% 且有明确改进 | P1 | 有价值的部分成功 |
+| 失败案例 | 连续N次相同失败模式 | P2 | 避免重复踩坑 |
+| 人工标记 | 工程师手动标记 | P0 | 重要经验记录 |
+| 定时触发 | 达到沉淀阈值（如10次相似修复） | P2 | 批量沉淀 |
+
+#### 5.4.2 知识提取与转换
+
+```python
+async def capture_knowledge(
+    self,
+    state: AgentState,
+    trigger_type: CaptureTrigger
+) -> KnowledgeUnit:
+    """
+    知识沉淀主流程
+    
+    Args:
+        state: 状态机上下文
+        trigger_type: 触发类型
+        
+    Returns:
+        创建的知识单元
+    """
+    # 1. 提取迭代数据
+    iteration_data = self._extract_iteration_data(state)
+    
+    # 2. 生成知识内容
+    content = self._generate_content(iteration_data)
+    
+    # 3. 构建元数据
+    metadata = self._build_metadata(iteration_data, trigger_type)
+    
+    # 4. 生成向量表示
+    vector = await self.embedding_service.embed(
+        f"{content.title} {content.summary}"
+    )
+    
+    # 5. 创建知识单元
+    knowledge_unit = KnowledgeUnit(
+        id=self._generate_id(),
+        content=content,
+        metadata=metadata,
+        vector_embedding={
+            "model": self.embedding_model,
+            "dimension": self.embedding_dim,
+            "vector": vector
+        },
+        audit={
+            "created_at": datetime.utcnow().isoformat(),
+            "version": "1.0",
+            "source": "automated_extraction",
+            "trigger_type": trigger_type.value
+        }
+    )
+    
+    # 6. 存储到数据库
+    await self._store_knowledge(knowledge_unit)
+    
+    # 7. 更新关联关系
+    await self._update_relationships(knowledge_unit, iteration_data)
+    
+    # 8. 触发验证流程（异步）
+    await self._request_verification(knowledge_unit)
+    
+    return knowledge_unit
+
+def _extract_iteration_data(self, state: AgentState) -> IterationData:
+    """从状态机上下文中提取迭代数据"""
+    return IterationData(
+        task_id=state.get('task_id'),
+        goal=state.get('task_request', {}).get('goal'),
+        code_diff=state.get('patch_content'),
+        files_modified=state.get('files_modified', []),
+        test_results=state.get('test_results', []),
+        analysis_report=state.get('analysis_report'),
+        decision=state.get('next_action'),
+        iteration_index=state.get('iteration', 1),
+        execution_time=state.get('execution_time'),
+        environment=state.get('test_environment')
+    )
+```
+
+#### 5.4.3 知识验证机制
+
+```python
+async def _request_verification(self, unit: KnowledgeUnit):
+    """请求知识验证（异步）"""
+    # 创建验证任务
+    verification_task = VerificationTask(
+        knowledge_unit_id=unit.id,
+        verification_type="auto",
+        status="pending_verify",
+        created_at=datetime.utcnow()
+    )
+    
+    # 提交到验证队列
+    await self.verification_queue.add(verification_task)
+    
+    # 设置知识状态为待验证
+    unit.metadata.verification_status = "pending_verify"
+    unit.metadata.maturity_level = 0
+```
 
 ### 5.5 与其他Agent的交互协议
 
-| 交互方向 | 触发时机 | 数据内容 |
+#### 5.5.1 交互模式
+
+| 交互方向 | 协议类型 | 触发时机 | 数据内容 | 超时 |
+|----------|----------|----------|----------|------|
+| CodeAgent → KBAgent | 同步Tool调用 | 代码分析前 | 查询相似问题和历史修复 | 30s |
+| TestAgent → KBAgent | 异步Tool调用 | 测试失败时 | 查询相似失败模式 | 30s |
+| AnalysisAgent → KBAgent | 同步Tool调用 | 根因分析时 | 查询历史根因和修复建议 | 60s |
+| 状态机 → KBAgent | 节点执行 | 任务完成后 | 沉淀知识单元 | 120s |
+
+#### 5.5.2 数据契约
+
+```python
+@dataclass
+class KnowledgeRetrievalRequest:
+    """知识检索请求"""
+    query: str
+    agent_type: str  # "CodeAgent" / "TestAgent" / "AnalysisAgent"
+    task_context: Dict[str, Any]
+    filters: RetrievalFilters
+    priority: int = 0  # 0=普通, 1=高优先级
+
+@dataclass
+class KnowledgeRetrievalResponse:
+    """知识检索响应"""
+    knowledge_units: List[KnowledgeUnit]
+    total_count: int
+    retrieval_time_ms: float
+    warnings: List[str] = field(default_factory=list)
+
+@dataclass
+class KnowledgeCaptureRequest:
+    """知识沉淀请求"""
+    iteration_data: IterationData
+    capture_type: CaptureType  # "auto" / "manual"
+    priority: int = 0
+    verification_required: bool = True
+```
+
+#### 5.5.3 错误处理
+
+| 错误类型 | 处理策略 | 降级方案 |
 |----------|----------|----------|
-| CodeAgent → KBAgent | 代码分析前 | 查询相似问题和历史修复 |
-| TestAgent → KBAgent | 测试失败时 | 查询相似失败模式 |
-| AnalysisAgent → KBAgent | 根因分析时 | 查询历史根因和修复建议 |
-| KBAgent → 所有Agent | 任务完成后 | 沉淀知识单元，更新向量索引 |
+| 向量数据库连接失败 | 重试3次，间隔1s | 返回空列表，记录错误日志 |
+| 检索超时 | 超时控制30s | 返回部分结果+警告 |
+| 向量化失败 | 回退到TF-IDF | 使用关键词检索替代 |
+| 存储失败 | 重试+回滚 | 异步重试队列 |
+
+### 5.6 KBAgent配置管理
+
+```python
+@dataclass
+class KBAgentConfig:
+    """KBAgent配置"""
+    # 向量数据库配置
+    qdrant_host: str = "localhost"
+    qdrant_port: int = 6333
+    collection_name: str = "firmware_knowledge"
+    
+    # 关系数据库配置
+    postgres_url: str = "postgresql://localhost/firmware_kb"
+    
+    # Embedding配置
+    embedding_model: str = "text-embedding-ada-002"
+    embedding_dim: int = 1536
+    
+    # 检索配置
+    default_max_results: int = 10
+    min_confidence_score: float = 0.5
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM"
+    
+    # 缓存配置
+    redis_url: str = "redis://localhost"
+    cache_ttl: int = 300  # 秒
+    
+    # 沉淀配置
+    auto_capture_enabled: bool = True
+    capture_threshold: int = 10  # 达到阈值自动沉淀
+    max_pending_verification: int = 100
+```
+
+### 5.7 性能优化策略
+
+#### 5.7.1 检索性能
+
+- **异步预取**：在状态机执行时预取可能需要的知识
+- **缓存分层**：L1（内存缓存）+ L2（Redis缓存）+ L3（向量数据库）
+- **批量操作**：知识沉淀支持批量写入
+
+#### 5.7.2 存储优化
+
+- **向量压缩**：使用Product Quantization减少存储
+- **冷热分离**：高频访问知识存储在热存储
+- **自动归档**：超过1年未访问的知识自动归档
 
 ---
 
