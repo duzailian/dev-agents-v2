@@ -5,83 +5,72 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 **AI-Driven Firmware Intelligent Testing System** (AI驱动固件智能测试系统)
-A multi-agent system that automates firmware testing by iterating through C code modification, test execution (QEMU/Target), and result analysis.
 
-- **Current Status**: Phase 2 (Core Module Implementation) starting. Architecture/Design (Phase 1) is complete.
-- **Primary Language**: Python (Orchestration/Agents), C (Target Firmware).
-- **Documentation Language**: Chinese (Main), English (Code comments/Protocol).
+A multi-agent system that automates firmware testing through iterative C code modification, test execution (QEMU/Target), and result analysis. The core loop: AI suggests code changes → tests run → results analyzed → decisions made → repeat until convergence.
 
-## Critical Protocol: Project Command Center
+- **Current Status**: Phase 2 (Core Module Implementation)
+- **Languages**: Python (orchestration), C (target firmware)
+- **Documentation**: Chinese (design docs), English (code/comments)
 
-**ALWAYS** start your session by reading `docs/PROJECT_COMMAND_CENTER.md`.
-This file is the single source of truth for project status, active tasks, and context handoff.
+## Critical: Start Here
 
-## Tech Stack & Architecture
-
-The system uses a **LangGraph-driven** architecture (Note: CrewAI orchestration was removed in V2).
-
-- **Orchestration**: LangGraph (State Machine & Workflow Control)
-- **Agent Runtime**: LangChain Agents
-- **Knowledge Base**: LangChain + Qdrant (RAG)
-- **Database**: PostgreSQL (Metadata), Qdrant (Vector)
-- **Execution Engines**:
-  - `CodeAnalyzer`: Tree-sitter based C analysis
-  - `CodeModifier`: AI-driven code patching
-  - `TestOrchestrator`: QEMU/BMC/Board runner
-  - `ResultAnalyzer`: Test log analysis
-- **Security**: SecretFilter, SAST (Semgrep), Docker Sandbox
+**ALWAYS** read `docs/PROJECT_COMMAND_CENTER.md` first. It contains current project status, active tasks, and session handoff context.
 
 ## Commands
 
-### Setup
 ```bash
-# Install dependencies
+# Setup
 pip install -r requirements.txt
-
-# Install package in editable mode
 pip install -e .
-```
 
-### Development (Planned)
-```bash
-# Run tests (when implemented)
+# Run all tests
 pytest
 
-# Run a specific test
-pytest tests/path/to/test_file.py::test_function_name
+# Run specific test file or test
+pytest tests/test_analyzer.py
+pytest tests/test_analyzer.py::test_function_name
 
-# Run the API server (FastAPI)
+# Run API server
 uvicorn api.main:app --reload
 ```
 
-## Directory Structure
+## Architecture Overview
 
-```text
-.
-├── config/              # Configuration files
-├── docs/                # Documentation (See Key Documentation below)
-├── src/ (Planned)
-│   ├── api/             # FastAPI endpoints
-│   ├── agents/          # Agent definitions (LangChain)
-│   ├── graph/           # LangGraph state machine definitions
-│   ├── executor/        # QEMU/Board adapters
-│   ├── knowledge/       # RAG system
-│   └── security/        # SecretFilter & Sandbox logic
-└── tests/ (Planned)     # Unit and Integration tests
+**7-Layer Architecture** (LangGraph as sole orchestration layer):
+
 ```
+Layer 7: Application (CLI, REST API, WebUI)
+Layer 6: Orchestration (LangGraph state machine, SecretFilter)
+Layer 5: Agents (CodeAgent, TestAgent, AnalysisAgent, KBAgent)
+Layer 4.5: Security (SAST scanning, sandbox isolation)
+Layer 4: Engines (CodeAnalyzer, CodeModifier, TestOrchestrator, ResultAnalyzer)
+Layer 3: Knowledge (RAG with Qdrant vectors + PostgreSQL metadata)
+Layer 2: Infrastructure (QEMU, target boards, Docker)
+Layer 1: Data (code repos, test artifacts, logs)
+```
+
+**Key Components**:
+
+- `src/tools/code_analysis/`: Tree-sitter based C/C++ parser and analyzer. `CodeAnalyzer` orchestrates parsing, static analysis, and AI analysis into unified `CodeAnalysis` results.
+- `src/tools/code_modification/`: Git-based patch application via `CodeModifier`. Uses `git apply` for safe patch operations with conflict detection.
+- `src/models/code.py`: Core data models (`CodeAnalysis`, `CodeIssue`, `CodeMetrics`, `IssueType`, `IssueSeverity`).
+- `src/agents/`: LangChain agent implementations for each specialized role.
+
+**Execution Modes**: INTERACTIVE (human approval), CI (auto with safety limits), AUTO (fully autonomous).
 
 ## Key Documentation
 
-| File | Description |
-|------|-------------|
-| `docs/PROJECT_COMMAND_CENTER.md` | **Read First**. Status, tasks, and handoff. |
-| `docs/ARCHITECTURE_V2.md` | System architecture (Layers 1-7). |
-| `docs/DETAILED_DESIGN_V2.md` | Implementation details. |
-| `docs/PHASE_2_TASK_BREAKDOWN.md` | Tasks for the current implementation phase. |
+| File | Purpose |
+|------|---------|
+| `docs/PROJECT_COMMAND_CENTER.md` | **Read first**. Status, tasks, handoff. |
+| `docs/ARCHITECTURE_V2.md` | Full 7-layer architecture design |
+| `docs/DETAILED_DESIGN_V2.md` | Implementation specs, API contracts |
+| `docs/AGENT_DESIGN.md` | Agent roles, tools, rejection policies |
+| `docs/STATE_MACHINE.md` | LangGraph state transitions, convergence logic |
 
-## Development Guidelines
+## Development Rules
 
-1.  **Architecture Alignment**: Follow `ARCHITECTURE_V2.md` strictly. Use LangGraph for flow control, not CrewAI.
-2.  **Security First**: All code execution must happen in sandboxes. No secrets in logs.
-3.  **Documentation**: Update documentation in `docs/` when design changes.
-4.  **Testing**: Write tests for all new modules.
+1. **LangGraph Only**: All workflow orchestration through LangGraph. No secondary orchestration frameworks.
+2. **Security**: Code execution in Docker sandboxes. Use SecretFilter for all logs. SAST scanning before patch application.
+3. **Async Pattern**: Engines use `async/await`. See `CodeAnalyzer.analyze_file()` for the pattern.
+4. **Protocol Types**: Use Python `Protocol` for dependency injection (e.g., `StaticAnalyzer`, `AIAnalyzer` protocols in analyzer.py).

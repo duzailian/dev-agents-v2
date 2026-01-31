@@ -1,4 +1,6 @@
-# Phase 1 任务拆分详表
+# Phase 1 任务拆分详表 (Historical)
+
+> **注意**：Phase 1 已完成。部分任务描述中提及的 CrewAI 已在 Phase 2 架构优化中被 LangGraph 取代。本文件仅作历史记录参考。
 
 ## 任务1-1：需求分析和REQUIREMENTS.md
 

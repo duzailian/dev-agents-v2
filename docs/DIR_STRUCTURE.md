@@ -21,7 +21,7 @@ dev-agents-v2/
 │   └── TASK_CONTEXT_GUIDE.md
 ├── src/                         # Source code (planned; not yet in repo)
 │   ├── api/                     # FastAPI controllers and routes
-│   ├── agents/                  # CrewAI agents and orchestrator logic
+│   ├── agents/                  # LangGraph nodes and agent logic
 │   ├── executor/                # Execution engines (QEMU, Board, BMC)
 │   ├── knowledge/               # Qdrant integration and RAG logic
 │   ├── models/                  # Pydantic models and DB schemas

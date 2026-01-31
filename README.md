@@ -44,7 +44,7 @@ docs/
 
 ## 技术栈
 
-- 多Agent协调：CrewAI
+- 多Agent协调：LangGraph (唯一编排层)
 - 状态机：LangGraph
 - RAG知识库：LangChain
 - 向量数据库：Qdrant

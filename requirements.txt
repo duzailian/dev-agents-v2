@@ -5,8 +5,8 @@ pydantic==2.7.4
 pydantic-settings==2.3.4
 
 # Multi-Agent
-pyautogen==0.2.28
 langchain==0.2.5
+langgraph>=0.0.10  # Added explicitly for orchestration
 openai==1.35.3
 
 # Knowledge Base & Vector DB

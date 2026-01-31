@@ -25,7 +25,7 @@
 ```yaml
 核心框架:
   - 状态机与编排: LangGraph (LangChain Ecosystem) - 作为唯一编排层
-  - Agent运行时: LangChain Agents (原CrewAI仅作为Agent定义参考，不参与编排)
+  - Agent运行时: LangChain Agents
   - RAG引擎: LangChain + Qdrant
   - 向量数据库: Qdrant
   - 关系数据库: PostgreSQL
@@ -171,9 +171,8 @@ graph TB
 - **KBAgent**：负责知识库管理、经验沉淀、检索增强
 
 #### Layer 6 - 编排层
-- **CrewAI**：多Agent协作框架，管理Agent生命周期和任务分配
-- **LangGraph**：状态机实现，确保执行流程的可控性和可追溯性
-- **执行编排器**：具体执行流程的编排和控制
+- **LangGraph**：作为系统唯一的编排核心，基于状态机（State Graph）管理Agent的执行流程、状态流转和错误恢复。
+- **执行编排器**：TestOrchestrator的具体实现，负责测试环境的生命周期管理。
 
 #### Layer 7 - 应用层
 - **命令行界面**：面向开发者的CLI工具
@@ -182,7 +181,7 @@ graph TB
 
 ---
 
-## 3. CrewAI Agent职责设计
+## 3. Agent职责设计
 
 ### 3.1 Agent总体设计
 

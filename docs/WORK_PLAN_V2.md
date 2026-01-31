@@ -23,7 +23,7 @@
 - 实现经验的可复用和产品线间的快速迁移
 
 **技术目标**：
-- 建立基于CrewAI的多Agent协作架构
+- 建立基于LangGraph的多Agent协作架构
 - 实现LangGraph驱动的状态机控制系统
 - 构建RAG增强的知识库系统
 - 支持QEMU+目标板的混合测试环境
@@ -51,8 +51,8 @@
 
 ```yaml
 核心框架:
-  - 多Agent协调: CrewAI v0.28+
-  - 状态机: LangGraph (LangChain Ecosystem)
+  - 状态机与编排: LangGraph (LangChain Ecosystem)
+  - Agent运行时: LangChain
   - RAG引擎: LangChain + Qdrant
   - 向量数据库: Qdrant
   - 关系数据库: PostgreSQL
@@ -112,7 +112,7 @@
 3. **ARCHITECTURE_V2.md** ✅（任务1-3）
    - 内容：分层架构设计、Agent职责、技术栈选择、数据流设计
    - 规模：2700+行，定义了Layer 1-7的完整架构
-   - 成果：确立了基于CrewAI+LangGraph+LangChain的技术路线
+   - 成果：确立了基于LangGraph+LangChain的技术路线
 
 4. **AGENT_DESIGN.md** ✅（任务1-4）
    - 内容：4个Agent的详细设计、能力定义、接口规范
@@ -241,23 +241,23 @@
 
 **阶段名称**：Multi-Agent系统（Multi-Agent Coordination）
 **预计时间**：5-7天
-**目标**：基于CrewAI框架实现多Agent协作系统，建立Agent间的通信和协调机制
+**目标**：基于LangGraph实现多Agent协作系统，建立Agent间的通信和协调机制
 
 ### 5.2 详细工作计划
 
 | Phase 4 Multi-Agent系统 | |
 |---|---|
-| **目标** | 建立基于CrewAI的多Agent协作系统，实现Agent间的有效通信和任务协调 |
-| **关键工作项** | 1. CrewAI框架集成和配置<br/>2. KBAgent完整实现<br/>3. Agent间通信协议实现<br/>4. 任务队列和调度系统<br/>5. Agent生命周期管理<br/>6. 错误处理和重试机制<br/>7. Agent性能监控 |
-| **交付物** | - CrewAI配置和初始化（src/coordination/crewai_config.py）<br/>- KBAgent实现（src/agents/kb_agent.py）<br/>- Agent通信协议（src/coordination/communication.py）<br/>- 任务调度器（src/coordination/task_scheduler.py）<br/>- Agent管理器（src/coordination/agent_manager.py）<br/>- 错误处理框架（src/coordination/error_handler.py）<br/>- 性能监控（src/monitoring/agent_monitor.py）<br/>- Agent配置管理（src/config/agents/）<br/>- 集成测试套件（tests/integration/test_agents.py） |
-| **完成标准** | 1. CrewAI成功集成并正确配置<br/>2. KBAgent实现知识库完整操作能力<br/>3. Agent间通信延迟<100ms<br/>4. 任务调度支持优先级和依赖关系<br/>5. Agent生命周期管理稳定可靠<br/>6. 错误恢复成功率>90%<br/>7. 系统支持并发执行多个Agent<br/>8. 监控数据完整准确<br/>9. 通过端到端协作测试 |
+| **目标** | 建立基于LangGraph的多Agent协作系统，实现Agent间的有效通信和任务协调 |
+| **关键工作项** | 1. LangGraph编排逻辑集成<br/>2. KBAgent完整实现<br/>3. 状态共享机制实现<br/>4. 任务队列和调度系统<br/>5. Agent生命周期管理<br/>6. 错误处理和重试机制<br/>7. Agent性能监控 |
+| **交付物** | - 编排配置（src/coordination/graph_config.py）<br/>- KBAgent实现（src/agents/kb_agent.py）<br/>- 状态定义（src/state/schema.py）<br/>- 任务调度器（src/coordination/task_scheduler.py）<br/>- Agent管理器（src/coordination/agent_manager.py）<br/>- 错误处理框架（src/coordination/error_handler.py）<br/>- 性能监控（src/monitoring/agent_monitor.py）<br/>- Agent配置管理（src/config/agents/）<br/>- 集成测试套件（tests/integration/test_agents.py） |
+| **完成标准** | 1. LangGraph成功集成并正确配置<br/>2. KBAgent实现知识库完整操作能力<br/>3. Agent间通信延迟<100ms<br/>4. 任务调度支持优先级和依赖关系<br/>5. Agent生命周期管理稳定可靠<br/>6. 错误恢复成功率>90%<br/>7. 系统支持并发执行多个Agent<br/>8. 监控数据完整准确<br/>9. 通过端到端协作测试 |
 | **预计时间** | 5-7天（开发4天，集成2天，测试1天） |
 
 ### 5.3 技术实现重点
 
 **Agent协作机制**：
-- 设计高效的任务分配算法
-- 实现Agent间的负载均衡
+- 设计高效的状态流转图
+- 实现基于全局状态的数据共享
 - 建立冲突检测和解决机制
 - 支持动态扩缩容和故障转移
 
@@ -360,7 +360,7 @@ graph TD
    - 需要协调统一的接口定义和数据格式
 
 2. **Phase 4 中的子模块并行**：
-   - CrewAI集成和KBAgent开发可并行
+   - LangGraph集成和KBAgent开发可并行
    - 通信协议和任务调度可独立开发
 
 **严格的顺序依赖**：
@@ -383,7 +383,7 @@ graph TD
 
 | 风险项 | 概率 | 影响 | 风险等级 | 缓解措施 |
 |--------|------|------|----------|----------|
-| CrewAI框架集成复杂度高 | 中 | 高 | 高 | 1. 提前进行POC验证<br/>2. 准备备选方案（Custom框架）<br/>3. 寻求社区技术支持 |
+| LangGraph状态机集成复杂度 | 中 | 高 | 高 | 1. 提前进行POC验证<br/>2. 完善状态定义<br/>3. 寻求社区技术支持 |
 | LangGraph状态机性能问题 | 中 | 中 | 中 | 1. 性能基准测试<br/>2. 状态机优化和缓存策略<br/>3. 异步执行优化 |
 | 向量数据库性能瓶颈 | 低 | 高 | 中 | 1. Qdrant集群部署<br/>2. 向量索引优化<br/>3. 读写分离架构 |
 | 大模型API稳定性问题 | 中 | 中 | 中 | 1. 多模型备选方案<br/>2. 本地化模型支持<br/>3. 请求重试和降级机制 |
@@ -520,7 +520,260 @@ graph TD
 
 ---
 
-## 12. 总结与下一步行动
+## 12. 文档质量改进计划
+
+### 12.1 文档审查总结
+
+**审查日期**：2026-01-30
+**审查范围**：项目全部设计文档
+**总体评分**：7.5/10
+
+本章节记录了文档审查中发现的所有问题及其修复计划，确保项目文档的完整性、准确性和一致性。
+
+### 12.2 P0级问题（阻塞级 - 必须立即修复）
+
+#### 12.2.1 DETAILED_DESIGN_V2.md 严重不完整
+
+**问题描述**：
+- 当前仅97行，严重缺乏实现细节
+- 缺少核心引擎的详细设计规格
+- 缺少数据结构定义、算法描述、接口规范
+
+**修复任务**：
+| 编号 | 任务 | 预计时间 | 负责人 |
+|------|------|----------|--------|
+| P0-1-1 | 补充CodeAnalyzer详细设计（类图、时序图、接口定义） | 0.5天 | 架构师 |
+| P0-1-2 | 补充CodeModifier详细设计（修改策略、补丁格式、安全检查） | 0.5天 | 架构师 |
+| P0-1-3 | 补充TestOrchestrator详细设计（环境适配器、生命周期管理） | 0.5天 | 架构师 |
+| P0-1-4 | 补充ResultAnalyzer详细设计（日志解析、根因分析算法） | 0.5天 | 架构师 |
+| P0-1-5 | 添加数据流图和状态转换图 | 0.5天 | 架构师 |
+
+**预计总时间**：2-3天
+**完成标准**：文档扩展至800-1000行，覆盖所有核心引擎的详细设计
+
+#### 12.2.2 API_SPEC.md 严重不完整
+
+**问题描述**：
+- 当前仅65行，缺少关键API规范
+- 缺少请求/响应模型定义
+- 缺少错误码体系
+- 缺少认证授权规范
+- 缺少版本管理策略
+
+**修复任务**：
+| 编号 | 任务 | 预计时间 | 负责人 |
+|------|------|----------|--------|
+| P0-2-1 | 使用OpenAPI 3.0规范重写API定义 | 0.5天 | 后端开发 |
+| P0-2-2 | 定义完整的请求/响应模型（Pydantic Schema） | 0.5天 | 后端开发 |
+| P0-2-3 | 设计错误码体系（业务错误码、系统错误码） | 0.25天 | 后端开发 |
+| P0-2-4 | 添加认证授权规范（JWT/API Key方案） | 0.25天 | 后端开发 |
+| P0-2-5 | 添加API版本管理和兼容性策略 | 0.25天 | 架构师 |
+
+**预计总时间**：1-2天
+**完成标准**：符合OpenAPI 3.0规范，包含完整的请求/响应示例
+
+### 12.3 P1级问题（高优先级 - Phase 2开始前修复）
+
+#### 12.3.1 REQUIREMENTS.md 内容截断
+
+**问题描述**：
+- 测试环境需求TR-07~TR-14章节缺失
+- 知识库需求KR章节缺失
+- 需求编号存在跳跃（FR-18→FR-24）
+
+**修复任务**：
+| 编号 | 任务 | 预计时间 | 负责人 |
+|------|------|----------|--------|
+| P1-1-1 | 补充TR-07~TR-14测试环境需求 | 0.5天 | 产品经理 |
+| P1-1-2 | 补充KR-01~KR-XX知识库需求 | 0.5天 | 产品经理 |
+| P1-1-3 | 修复需求编号连续性 | 0.25天 | 产品经理 |
+
+**预计总时间**：1天
+
+#### 12.3.2 AGENT_DESIGN.md KBAgent设计不足
+
+**问题描述**：
+- KBAgent章节仅有基础描述
+- 缺少RAG检索流程详细设计
+- 缺少知识沉淀机制详细设计
+- 缺少与其他Agent的交互协议
+
+**修复任务**：
+| 编号 | 任务 | 预计时间 | 负责人 |
+|------|------|----------|--------|
+| P1-2-1 | 扩展KBAgent职责和能力定义 | 0.25天 | 架构师 |
+| P1-2-2 | 添加RAG检索流程详细设计 | 0.25天 | 架构师 |
+| P1-2-3 | 添加知识沉淀触发机制设计 | 0.25天 | 架构师 |
+| P1-2-4 | 补充KBAgent与其他Agent的交互协议 | 0.25天 | 架构师 |
+
+**预计总时间**：1天
+
+#### 12.3.3 PHASE_2_TASK_BREAKDOWN.md 缺少POC任务
+
+**问题描述**：
+- 缺少技术验证（POC）任务
+- 未包含LangGraph集成验证
+- 未包含Tree-sitter集成验证
+- 未包含Qdrant部署验证
+
+**修复任务**：
+| 编号 | 任务 | 预计时间 | 负责人 |
+|------|------|----------|--------|
+| P1-3-1 | 添加任务2-0：技术POC验证 | 0.25天 | 架构师 |
+| P1-3-2 | 定义LangGraph集成验证标准 | 0.25天 | 后端开发 |
+| P1-3-3 | 定义Tree-sitter集成验证标准 | 0.25天 | 后端开发 |
+| P1-3-4 | 定义Qdrant部署验证标准 | 0.25天 | DevOps |
+
+**预计总时间**：1天
+
+#### 12.3.4 STATE_MACHINE.md 重复定义
+
+**问题描述**：
+- ConvergenceCriteria在5.19节和第6节重复定义
+- 两处定义存在细微差异，可能导致实现混淆
+
+**修复任务**：
+| 编号 | 任务 | 预计时间 | 负责人 |
+|------|------|----------|--------|
+| P1-4-1 | 合并5.19节和第6节的ConvergenceCriteria定义 | 0.25天 | 架构师 |
+| P1-4-2 | 保留第6节作为规范定义，5.19节改为引用 | 0.25天 | 架构师 |
+
+**预计总时间**：0.5天
+
+### 12.4 P2级问题（中优先级 - Phase 2期间修复）
+
+#### 12.4.1 大型文档拆分
+
+**问题描述**：
+- ARCHITECTURE_V2.md过大（107KB），难以维护
+- KNOWLEDGE_SCHEMA.md过大（129KB），难以阅读
+- CONFIG_MANAGEMENT.md过长（2400+行）
+
+**修复任务**：
+| 编号 | 任务 | 预计时间 | 负责人 |
+|------|------|----------|--------|
+| P2-1-1 | 将ARCHITECTURE_V2.md拆分为多个子文档 | 0.5天 | 架构师 |
+| P2-1-2 | 将KNOWLEDGE_SCHEMA.md拆分（向量DB/关系DB/文件存储） | 0.5天 | 架构师 |
+| P2-1-3 | 将CONFIG_MANAGEMENT.md拆分（核心配置/Agent配置/环境配置） | 0.5天 | 后端开发 |
+| P2-1-4 | 创建文档索引和导航页 | 0.25天 | 架构师 |
+
+**预计总时间**：2天
+
+**拆分建议**：
+```
+docs/
+├── architecture/
+│   ├── ARCHITECTURE_OVERVIEW.md      # 架构总览
+│   ├── LAYER_1_APPLICATION.md        # 应用层设计
+│   ├── LAYER_2_ORCHESTRATION.md      # 编排层设计
+│   ├── LAYER_3_AGENTS.md             # Agent层设计
+│   ├── LAYER_4_ENGINES.md            # 引擎层设计
+│   ├── LAYER_5_KNOWLEDGE.md          # 知识层设计
+│   └── LAYER_6_INFRASTRUCTURE.md     # 基础设施层设计
+├── knowledge/
+│   ├── KNOWLEDGE_OVERVIEW.md         # 知识库总览
+│   ├── VECTOR_DB_SCHEMA.md           # 向量数据库Schema
+│   ├── RELATIONAL_DB_SCHEMA.md       # 关系数据库Schema
+│   └── FILE_STORAGE_SCHEMA.md        # 文件存储Schema
+└── config/
+    ├── CONFIG_OVERVIEW.md            # 配置管理总览
+    ├── SYSTEM_CONFIG.md              # 系统配置
+    ├── AGENT_CONFIG.md               # Agent配置
+    └── ENVIRONMENT_CONFIG.md         # 环境配置
+```
+
+### 12.5 P3级问题（低优先级 - Phase 3前修复）
+
+#### 12.5.1 版本号标准化
+
+**问题描述**：
+- 文档版本号不一致（v1.0/v2.0/v2.1混用）
+- 缺少统一的版本管理规范
+
+**修复任务**：
+| 编号 | 任务 | 预计时间 | 负责人 |
+|------|------|----------|--------|
+| P3-1-1 | 制定文档版本管理规范 | 0.25天 | 架构师 |
+| P3-1-2 | 统一所有文档版本号为v2.0 | 0.25天 | 架构师 |
+| P3-1-3 | 添加版本变更日志 | 0.25天 | 架构师 |
+
+**预计总时间**：0.5天
+
+#### 12.5.2 历史文档归档
+
+**问题描述**：
+- 部分历史文档已删除但仍被引用
+- 缺少文档归档机制
+
+**修复任务**：
+| 编号 | 任务 | 预计时间 | 负责人 |
+|------|------|----------|--------|
+| P3-2-1 | 创建docs/archive/目录 | 0.1天 | DevOps |
+| P3-2-2 | 移动废弃文档到归档目录 | 0.25天 | 架构师 |
+| P3-2-3 | 更新文档引用关系 | 0.25天 | 架构师 |
+
+**预计总时间**：0.5天
+
+### 12.6 跨文档一致性修复
+
+| 编号 | 问题 | 涉及文档 | 修复方案 | 预计时间 |
+|------|------|----------|----------|----------|
+| INC-01 | ConvergenceCriteria重复定义 | STATE_MACHINE.md | 合并定义，保留第6节 | 0.25天 |
+| INC-02 | CodeAnalyzer签名不匹配 | DETAILED_DESIGN_V2.md, src/tools/ | 以代码实现为准更新文档 | 0.25天 |
+| INC-03 | Agent调用风格不一致 | AGENT_DESIGN.md, STATE_MACHINE.md | 统一使用LangGraph节点调用风格 | 0.25天 |
+| INC-04 | 版本号不一致 | 全部文档 | 统一为v2.0 | 0.25天 |
+| INC-05 | 需求编号跳跃 | REQUIREMENTS.md | 补充缺失需求或重新编号 | 0.25天 |
+
+**预计总时间**：1天
+
+### 12.7 文档改进时间线
+
+```
+Phase 2 开始前（必须完成）
+├─ Week 1 Day 1-2: P0-1 DETAILED_DESIGN_V2.md 完善
+├─ Week 1 Day 2-3: P0-2 API_SPEC.md 重写
+├─ Week 1 Day 3:   P1-1 REQUIREMENTS.md 补充
+├─ Week 1 Day 4:   P1-2 AGENT_DESIGN.md KBAgent扩展
+├─ Week 1 Day 4:   P1-3 PHASE_2_TASK_BREAKDOWN.md POC任务
+└─ Week 1 Day 5:   P1-4 STATE_MACHINE.md 去重 + 一致性修复
+
+Phase 2 期间（并行完成）
+├─ Week 2-3: P2-1 大型文档拆分
+└─ Week 3:   P2-1-4 创建文档索引
+
+Phase 3 开始前
+├─ P3-1 版本号标准化
+└─ P3-2 历史文档归档
+```
+
+### 12.8 文档改进验收标准
+
+**P0级验收标准**：
+- [ ] DETAILED_DESIGN_V2.md 扩展至800-1000行
+- [ ] DETAILED_DESIGN_V2.md 包含所有核心引擎的类图和时序图
+- [ ] API_SPEC.md 符合OpenAPI 3.0规范
+- [ ] API_SPEC.md 包含完整的请求/响应示例
+- [ ] API_SPEC.md 包含错误码体系和认证规范
+
+**P1级验收标准**：
+- [ ] REQUIREMENTS.md 包含完整的TR和KR章节
+- [ ] AGENT_DESIGN.md KBAgent章节扩展至与其他Agent同等详细程度
+- [ ] PHASE_2_TASK_BREAKDOWN.md 包含POC验证任务
+- [ ] STATE_MACHINE.md 无重复定义
+
+**P2级验收标准**：
+- [ ] 大型文档拆分完成
+- [ ] 文档导航索引创建完成
+- [ ] 拆分后的文档可独立阅读
+
+**P3级验收标准**：
+- [ ] 所有文档版本号统一为v2.0
+- [ ] 历史文档归档完成
+- [ ] 文档引用关系更新完成
+
+---
+
+## 13. 总结与下一步行动
 
 ### 12.1 项目总体评估
 
@@ -542,7 +795,7 @@ graph TD
 
 **近期行动**（未来2周内）：
 1. 完善Phase 2的详细任务分解
-2. 进行技术POC验证（CrewAI集成、Qdrant部署等）
+2. 进行技术POC验证（LangGraph集成、Qdrant部署等）
 3. 建立开发规范和代码审查流程
 
 **中期行动**（未来1个月）：
