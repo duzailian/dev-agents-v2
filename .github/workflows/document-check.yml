@@ -1,0 +1,140 @@
+name: Document Version Check
+
+on:
+  push:
+    paths:
+      - 'docs/**/*.md'
+  pull_request:
+    paths:
+      - 'docs/**/*.md'
+  schedule:
+    # 每周一凌晨检查一次
+    - cron: '0 0 * * 1'
+
+jobs:
+  check-versions:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check document versions
+        id: check_versions
+        run: |
+          echo "=== Document Version Check ==="
+          
+          # 定义需要v2.0的核心文档列表
+          CORE_DOCS=(
+            "ARCHITECTURE_V2.md"
+            "API_SPEC.md"
+            "DETAILED_DESIGN_V2.md"
+            "AGENT_DESIGN.md"
+            "STATE_MACHINE.md"
+            "REQUIREMENTS.md"
+            "CONFIG_MANAGEMENT.md"
+            "KNOWLEDGE_SCHEMA.md"
+            "WORK_PLAN_V2.md"
+            "PHASE_2_TASK_BREAKDOWN.md"
+            "PROJECT_COMMAND_CENTER.md"
+            "ADR.md"
+          )
+          
+          FAILED=0
+          for doc in "${CORE_DOCS[@]}"; do
+            if [ -f "docs/$doc" ]; then
+              # 检查是否包含 "文档版本：v2.0"
+              if grep -q "> 文档版本：v2.0" "docs/$doc"; then
+                echo "✅ $doc - 版本正确"
+              else
+                echo "❌ $doc - 缺少版本v2.0标记"
+                FAILED=1
+              fi
+            else
+              echo "⚠️ $doc - 文件不存在"
+            fi
+          done
+          
+          # 检查所有md文件是否有版本标记
+          echo ""
+          echo "=== 所有文档版本状态 ==="
+          for file in docs/*.md; do
+            if [ -f "$file" ]; then
+              filename=$(basename "$file")
+              if grep -q "> 文档版本：" "$file"; then
+                version=$(grep "> 文档版本：" "$file" | head -1)
+                echo "✅ $filename: $version"
+              else
+                echo "⚠️ $filename: 无版本标记"
+              fi
+            fi
+          done
+          
+          if [ $FAILED -eq 1 ]; then
+            echo ""
+            echo "❌ 检查失败：部分核心文档缺少版本v2.0标记"
+            exit 1
+          else
+            echo ""
+            echo "✅ 所有核心文档版本检查通过"
+          fi
+
+      - name: Report status
+        if: failure()
+        run: |
+          echo ""
+          echo "=== 修复方法 ==="
+          echo "在文档顶部添加以下版本头："
+          echo ""
+          echo "> 文档版本：v2.0"
+          echo ">"
+          echo "> [文档描述]"
+          echo ""
+          echo "对于非核心文档（如SESSION_HANDOFF.md），可以忽略此检查。"
+
+  check-links:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check markdown links
+        id: check_links
+        run: |
+          echo "=== Checking Internal Markdown Links ==="
+          
+          # 安装markdown链接检查器
+          npm install -g markdown-link-check@3.11.2 2>/dev/null || true
+          
+          # 简单检查：确保docs目录下的相对链接格式正确
+          for file in docs/*.md; do
+            if [ -f "$file" ]; then
+              # 检查 [xxx](docs/ 格式的链接
+              if grep -qE '\[.+\]\(docs/' "$file"; then
+                echo "⚠️ $file 包含指向docs目录的相对链接，可能需要修复"
+                grep -oE '\[.+\]\(docs/[^)]+\)' "$file" | head -3
+              fi
+            fi
+          done
+          
+          echo "✅ 链接检查完成"
+
+  summary:
+    runs-on: ubuntu-latest
+    needs: [check-versions, check-links]
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          echo "=== Document Quality Check Summary ==="
+          if [ "${{ needs.check-versions.result }}" == "success" ]; then
+            echo "✅ 版本检查：通过"
+          else
+            echo "❌ 版本检查：失败"
+          fi
+          if [ "${{ needs.check-links.result }}" == "success" ]; then
+            echo "✅ 链接检查：通过"
+          else
+            echo "⚠️ 链接检查：需要注意"
+          fi
