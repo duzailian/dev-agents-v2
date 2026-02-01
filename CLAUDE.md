@@ -4,73 +4,73 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**AI-Driven Firmware Intelligent Testing System** (AI驱动固件智能测试系统)
+**AI-Driven Firmware Intelligent Testing System**
+A multi-agent system that automates firmware testing through iterative C code modification, test execution (QEMU/Target), and result analysis.
 
-A multi-agent system that automates firmware testing through iterative C code modification, test execution (QEMU/Target), and result analysis. The core loop: AI suggests code changes → tests run → results analyzed → decisions made → repeat until convergence.
-
-- **Current Status**: Phase 2 (Core Module Implementation)
-- **Languages**: Python (orchestration), C (target firmware)
-- **Documentation**: Chinese (design docs), English (code/comments)
-
-## Critical: Start Here
-
-**ALWAYS** read `docs/PROJECT_COMMAND_CENTER.md` first. It contains current project status, active tasks, and session handoff context.
+- **Orchestration**: LangGraph (State Machine)
+- **Languages**: Python (Agents/Orchestration), C (Target Firmware)
+- **Status**: Phase 2 (Core Module Implementation)
 
 ## Commands
 
+### Setup & Installation
 ```bash
-# Setup
+# Install dependencies
 pip install -r requirements.txt
-pip install -e .
 
+# Install project in editable mode
+pip install -e .
+```
+
+### Running the Application
+```bash
+# Run the API server (FastAPI)
+uvicorn api.main:app --reload
+
+# Or via the installed CLI entry point
+firmware-agent
+```
+
+### Testing
+```bash
 # Run all tests
 pytest
 
-# Run specific test file or test
+# Run specific tests
 pytest tests/test_analyzer.py
-pytest tests/test_analyzer.py::test_function_name
-
-# Run API server
-uvicorn api.main:app --reload
 ```
 
-## Architecture Overview
+## Architecture
 
-**7-Layer Architecture** (LangGraph as sole orchestration layer):
+The system follows a **7-Layer Architecture** managed by LangGraph:
 
-```
-Layer 7: Application (CLI, REST API, WebUI)
-Layer 6: Orchestration (LangGraph state machine, SecretFilter)
-Layer 5: Agents (CodeAgent, TestAgent, AnalysisAgent, KBAgent)
-Layer 4.5: Security (SAST scanning, sandbox isolation)
-Layer 4: Engines (CodeAnalyzer, CodeModifier, TestOrchestrator, ResultAnalyzer)
-Layer 3: Knowledge (RAG with Qdrant vectors + PostgreSQL metadata)
-Layer 2: Infrastructure (QEMU, target boards, Docker)
-Layer 1: Data (code repos, test artifacts, logs)
-```
+1.  **Application**: CLI/WebUI (`src/api`)
+2.  **Orchestration**: LangGraph State Machine (`src/orchestrator/graph.py`)
+3.  **Agents**: Specialized LangChain agents (`src/agents`)
+    *   `CodeAgent`: Modifies C code
+    *   `TestAgent`: Runs tests
+    *   `AnalysisAgent`: Analyzes results
+    *   `KBAgent`: Manages knowledge base
+4.  **Security**: Safety layer (`src/security`) including `SecretFilter`
+5.  **Engines**: Core logic (`src/tools`)
+    *   `code_analysis`: Tree-sitter parsers
+    *   `code_modification`: Git-based patching
+    *   `test_orchestration`: Environment management
+6.  **Knowledge**: RAG/Vector DB
+7.  **Infrastructure**: Docker/QEMU
 
-**Key Components**:
+## Code Structure
 
-- `src/tools/code_analysis/`: Tree-sitter based C/C++ parser and analyzer. `CodeAnalyzer` orchestrates parsing, static analysis, and AI analysis into unified `CodeAnalysis` results.
-- `src/tools/code_modification/`: Git-based patch application via `CodeModifier`. Uses `git apply` for safe patch operations with conflict detection.
-- `src/models/code.py`: Core data models (`CodeAnalysis`, `CodeIssue`, `CodeMetrics`, `IssueType`, `IssueSeverity`).
-- `src/agents/`: LangChain agent implementations for each specialized role.
+- `src/agents/`: Agent implementations (Analysis, Code, KB, Test)
+- `src/orchestrator/`: LangGraph workflow definitions
+- `src/security/`: Security filters and safety checks
+- `src/tools/`: Core functional engines
+- `src/models/`: Shared Pydantic data models (`code.py`)
+- `docs/`: Project documentation (Refer to `PROJECT_COMMAND_CENTER.md` for status)
 
-**Execution Modes**: INTERACTIVE (human approval), CI (auto with safety limits), AUTO (fully autonomous).
+## Guidelines
 
-## Key Documentation
-
-| File | Purpose |
-|------|---------|
-| `docs/PROJECT_COMMAND_CENTER.md` | **Read first**. Status, tasks, handoff. |
-| `docs/ARCHITECTURE_V2.md` | Full 7-layer architecture design |
-| `docs/DETAILED_DESIGN_V2.md` | Implementation specs, API contracts |
-| `docs/AGENT_DESIGN.md` | Agent roles, tools, rejection policies |
-| `docs/STATE_MACHINE.md` | LangGraph state transitions, convergence logic |
-
-## Development Rules
-
-1. **LangGraph Only**: All workflow orchestration through LangGraph. No secondary orchestration frameworks.
-2. **Security**: Code execution in Docker sandboxes. Use SecretFilter for all logs. SAST scanning before patch application.
-3. **Async Pattern**: Engines use `async/await`. See `CodeAnalyzer.analyze_file()` for the pattern.
-4. **Protocol Types**: Use Python `Protocol` for dependency injection (e.g., `StaticAnalyzer`, `AIAnalyzer` protocols in analyzer.py).
+- **Orchestration**: All workflow logic resides in `src/orchestrator`. Do not implement state management in individual agents.
+- **Safety**: File modifications should go through `CodeModifier` which uses `git apply` for safety.
+- **Async**: Core engines use `async/await` patterns.
+- **Documentation**: Always check `docs/PROJECT_COMMAND_CENTER.md` for the latest task status before starting work.
