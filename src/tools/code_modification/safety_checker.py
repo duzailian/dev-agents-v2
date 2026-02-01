@@ -13,7 +13,7 @@ class SafetyChecker:
         (r'popen\s*\(', "Usage of popen() detected"),
         (r'rm\s+-rf', "Dangerous 'rm -rf' command detected"),
         (r'mkfs', "Filesystem formatting command 'mkfs' detected"),
-        (r'dd\s+if=', "Low-level disk copy 'dd' detected"),
+        (r'dd\s+if=', "Low-level disk copy 'dd if=' detected"),
     ]
 
     def check_security(self, code: str) -> Tuple[bool, List[str]]:
