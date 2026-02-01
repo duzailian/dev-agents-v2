@@ -22,6 +22,12 @@ class IssueSeverity(Enum):
     LOW = "low"
     INFO = "info"
 
+class RiskLevel(Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
 @dataclass
 class Location:
     """代码位置"""

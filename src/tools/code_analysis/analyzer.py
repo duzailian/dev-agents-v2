@@ -517,13 +517,16 @@ class CodeAnalyzer:
         lines_of_code = len([l for l in lines if l.strip() and not l.strip().startswith('//') and not l.strip().startswith('/*')])
         lines_of_comments = len([l for l in lines if l.strip().startswith('//') or l.strip().startswith('/*')])
 
-        # Calculate cyclomatic complexity (simplified: 1 + number of decision points)
+        # Calculate cyclomatic complexity
+        # ⚠️ TODO: Use tree-sitter AST for accurate complexity calculation
+        # Current simplified version counts decision points in source
         complexity = 1
         for char in code:
             if char in ['{', '?', '&', '|', '^']:
                 complexity += 1
 
-        # Max nesting depth (simplified: max consecutive braces)
+        # Max nesting depth
+        # ⚠️ TODO: Use tree-sitter AST for accurate nesting analysis
         max_nesting = 0
         current_nesting = 0
         for char in code:
@@ -537,10 +540,12 @@ class CodeAnalyzer:
             lines_of_code=lines_of_code,
             lines_of_comments=lines_of_comments,
             cyclomatic_complexity=complexity,
-            cognitive_complexity=complexity,  # Simplified: same as cyclomatic
+            # ⚠️ TODO: Implement proper cognitive complexity calculation
+            cognitive_complexity=complexity,
             function_count=len(functions),
             max_nesting_depth=max_nesting,
-            maintainability_index=100.0  # Simplified calculation
+            # ⚠️ TODO: Implement Microsoft maintainability index formula
+            maintainability_index=100.0  # Simplified: requires technical debt ratio
         )
 
     def _extract_symbols(self, code: str, language: str) -> List[Symbol]:

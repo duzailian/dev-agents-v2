@@ -1,6 +1,6 @@
 import os
 from typing import List, Dict, Any, Optional
-from tree_sitter import Language, Parser, Tree, Node, Query, QueryCursor
+from tree_sitter import Language, Parser, Tree, Node, Query
 import tree_sitter_c as tsc
 import tree_sitter_cpp as tscpp
 from src.models.code import FunctionNode, Location
@@ -44,10 +44,10 @@ class TreeSitterParser:
         self.lang_name = self.LANGUAGE_MAP.get(language.lower())
 
         if self.lang_name == "c":
-            self.language = Language(tsc.language())
+            self.language = Language(tsc.language(), 'c')
             self.parser = Parser(self.language)
         elif self.lang_name == "cpp":
-            self.language = Language(tscpp.language())
+            self.language = Language(tscpp.language(), 'cpp')
             self.parser = Parser(self.language)
         else:
             raise ValueError(f"Unsupported language: {language}")
@@ -76,14 +76,22 @@ class TreeSitterParser:
             Dict mapping capture names to lists of Nodes
         """
         query = self.language.query(pattern)
-        captures = query.captures(tree.root_node)
+        # Use query.matches() instead of deprecated query.captures()
+        matches = query.matches(tree.root_node)
 
-        # In 0.21.3, captures returns a list of tuples: [(Node, capture_name), ...]
         results = {}
-        for node, name in captures:
-            if name not in results:
-                results[name] = []
-            results[name].append(node)
+        for match in matches:
+            # match is a tuple: (pattern_index, captures_dict)
+            # captures_dict maps capture_name -> Node or list of Nodes
+            if isinstance(match, tuple) and len(match) >= 2:
+                captures = match[1]
+                for name, node in captures.items():
+                    if name not in results:
+                        results[name] = []
+                    if isinstance(node, list):
+                        results[name].extend(node)
+                    else:
+                        results[name].append(node)
 
         return results
 
@@ -100,14 +108,13 @@ class TreeSitterParser:
         """
         tree = self.parse(code)
         query = Query(self.language, self.FUNCTION_QUERY)
-        cursor = QueryCursor(query)
-        matches = cursor.matches(tree.root_node)
+        matches = query.matches(tree.root_node)
 
         functions = []
 
         for match in matches:
-            # Match structure in 0.21.3: (pattern_index, captures_dict)
-            # captures_dict maps name -> Node (or list of Nodes if multiple matches)
+            # match is a tuple: (pattern_index, captures_dict)
+            # captures_dict maps capture_name -> Node or list of Nodes
 
             captures = {}
             if isinstance(match, tuple) and len(match) >= 2:
@@ -171,8 +178,7 @@ class TreeSitterParser:
         """
         tree = self.parse(code)
         query = Query(self.language, self.CALL_QUERY)
-        cursor = QueryCursor(query)
-        matches = cursor.matches(tree.root_node)
+        matches = query.matches(tree.root_node)
 
         calls = []
         for match in matches:
