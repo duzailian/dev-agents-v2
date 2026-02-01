@@ -276,10 +276,15 @@ class AnalysisAgent:
 
 KBAgent 可以作为独立节点，也可以作为工具函数被其他 Agent 在内部调用。在 V2 架构中，推荐作为 **Tool** 使用，但在状态机中保留 **KnowledgeCapture** 节点用于知识沉淀。
 
+> **⚠️ 实现策略**：KBAgent采用分阶段实现策略。
+> - **Phase 2**: 基础版本，仅支持简单向量检索和知识沉淀
+> - **Phase 3**: 完整版本，支持混合检索、重排序、缓存等高级功能
+
 ```python
 class KBAgent:
     def __init__(self):
-        self.vector_db = QdrantClient()
+        self.vector_db = QdrantClient()  # Phase 3实现
+        self._cache = {}  # Phase 2: 简单内存缓存
 
     async def capture_node(self, state: AgentState) -> AgentState:
         """知识沉淀节点"""
@@ -290,37 +295,15 @@ class KBAgent:
             return {"messages": ["Knowledge captured"]}
         return {}
 
-### 5.3 RAG检索流程详细设计
+### 5.3 Phase 2 实现（简化版）
 
-#### 5.3.1 检索架构
+#### 5.3.1 简化检索流程
 
-```mermaid
-graph TD
-    subgraph "检索请求"
-        Query[查询请求] --> Preprocess[预处理]
-    end
-    
-    subgraph "检索引擎"
-        Preprocess --> Vectorize[向量化]
-        Vectorize --> Search[向量搜索]
-        Search --> Hybrid[混合检索]
-        Hybrid --> Rerank[重排序]
-    end
-    
-    subgraph "后处理"
-        Rerank --> Context[上下文构建]
-        Context --> Filter[过滤增强]
-        Filter --> Result[检索结果]
-    end
-    
-    Query -.->|同步调用| Result
-```
-
-#### 5.3.2 检索步骤详解
+Phase 2仅实现核心功能，复杂功能留待Phase 3：
 
 ```python
 class KBAgent:
-    """知识库管理专家"""
+    """知识库管理专家（Phase 2 简化版）"""
     
     def __init__(self, config: KBAgentConfig):
         self.vector_db = QdrantClient(
@@ -332,8 +315,8 @@ class KBAgent:
             model=config.embedding_model,
             dimension=config.embedding_dim
         )
-        self.reranker = CrossEncoderReranker()
-        self.cache = RedisCache(config.redis_url)
+        # Phase 3: 添加 reranker 和 Redis 缓存
+        self._cache = {}  # Phase 2: 简单内存缓存
     
     async def retrieve(
         self,
@@ -341,100 +324,59 @@ class KBAgent:
         context: RetrievalContext
     ) -> List[KnowledgeUnit]:
         """
-        知识检索主流程
+        知识检索主流程（Phase 2 简化版）
         
-        Args:
-            query: 自然语言查询
-            context: 检索上下文（产品线、标签、时间范围等）
-            
-        Returns:
-            排序后的知识单元列表
+        步骤：
+        1. 查询向量化
+        2. 向量搜索
+        3. 返回结果
         """
-        # 1. 查询预处理
-        preprocessed = await self._preprocess_query(query)
+        # 1. 查询向量化
+        query_vector = await self.embedding_service.embed(query)
         
-        # 2. 查询向量化
-        query_vector = await self.embedding_service.embed(preprocessed)
+        # 2. 缓存检查
+        cache_key = f"query:{hash(query)}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
         
-        # 3. 缓存检查（避免重复检索）
-        cache_key = self._generate_cache_key(query_vector, context)
-        cached = await self.cache.get(cache_key)
-        if cached:
-            return cached
+        # 3. 向量搜索（简单实现）
+        results = await self._vector_search(query_vector, context)
         
-        # 4. 多路检索
-        results = await self._multi_modal_search(
-            query_vector=query_vector,
-            context=context
-        )
+        # 4. 缓存结果
+        self._cache[cache_key] = results
         
-        # 5. 结果重排序
-        reranked = await self._rerank(query, results, context)
-        
-        # 6. 上下文构建
-        enhanced = await self._build_context(reranked, context)
-        
-        # 7. 缓存结果
-        await self.cache.set(cache_key, enhanced, ttl=300)
-        
-        return enhanced
+        return results
     
-    async def _preprocess_query(self, query: str) -> str:
-        """查询预处理：分词、实体提取、意图识别"""
-        # 实体提取
-        entities = await self._extract_entities(query)
-        
-        # 查询扩展（添加同义词和相关术语）
-        expanded = await self._expand_query(query, entities)
-        
-        return expanded
-    
-    async def _multi_modal_search(
+    async def _vector_search(
         self,
         query_vector: List[float],
         context: RetrievalContext
-    ) -> List[SearchResult]:
-        """多路检索：向量 + 关键词 + 产品线过滤"""
-        tasks = [
-            # 向量检索
-            self._vector_search(query_vector, context),
-            # 关键词检索
-            self._keyword_search(context.query, context),
-            # 元数据筛选
-            self._metadata_filter(context.filters)
-        ]
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # 合并结果去重
-        merged = self._merge_results(results)
-        
-        return merged
-    
-    async def _rerank(
-        self,
-        query: str,
-        results: List[KnowledgeUnit],
-        context: RetrievalContext
     ) -> List[KnowledgeUnit]:
-        """结果重排序：基于相关性和时效性"""
-        if not results:
-            return []
-        
-        # 使用CrossEncoder进行细粒度排序
-        query_doc_pairs = [
-            (query, unit.content.description) for unit in results
-        ]
-        scores = await self.reranker.predict(query_doc_pairs)
-        
-        # 融合原始分数和新分数
-        scored = list(zip(results, scores))
-        scored.sort(key=lambda x: x[1], reverse=True)
-        
-        return [unit for unit, _ in scored[:context.max_results]]
+        """简单的向量搜索（Phase 2）"""
+        # 直接调用Qdrant搜索
+        search_results = await self.vector_db.search(
+            query_vector=query_vector,
+            limit=context.max_results,
+            filter=context.filters
+        )
+        return search_results
 ```
 
-#### 5.3.3 检索参数配置
+#### 5.3.2 Phase 3 扩展功能
+
+Phase 3将添加以下高级功能：
+
+| 功能 | Phase 2 | Phase 3 |
+|------|---------|---------|
+| 向量检索 | ✅ 基础 | ✅ 优化 |
+| 关键词检索 | ❌ | ✅ |
+| 元数据过滤 | ✅ 基础 | ✅ 增强 |
+| 结果重排序 | ❌ | ✅ CrossEncoder |
+| 查询缓存 | 内存 | Redis |
+| 查询扩展 | ❌ | ✅ 同义词扩展 |
+| 重排序 | ❌ | ✅ |
+
+### 5.3.3 检索参数配置（Phase 2）
 
 ```python
 @dataclass
@@ -523,9 +465,6 @@ async def capture_knowledge(
     # 7. 更新关联关系
     await self._update_relationships(knowledge_unit, iteration_data)
     
-    # 8. 触发验证流程（异步）
-    await self._request_verification(knowledge_unit)
-    
     return knowledge_unit
 
 def _extract_iteration_data(self, state: AgentState) -> IterationData:
@@ -544,88 +483,67 @@ def _extract_iteration_data(self, state: AgentState) -> IterationData:
     )
 ```
 
-#### 5.4.3 知识验证机制
-
-```python
-async def _request_verification(self, unit: KnowledgeUnit):
-    """请求知识验证（异步）"""
-    # 创建验证任务
-    verification_task = VerificationTask(
-        knowledge_unit_id=unit.id,
-        verification_type="auto",
-        status="pending_verify",
-        created_at=datetime.utcnow()
-    )
-    
-    # 提交到验证队列
-    await self.verification_queue.add(verification_task)
-    
-    # 设置知识状态为待验证
-    unit.metadata.verification_status = "pending_verify"
-    unit.metadata.maturity_level = 0
-```
+> **Phase 2简化**：知识验证机制在Phase 2中暂不实现，仅在Phase 3中添加自动验证队列。
 
 ### 5.5 与其他Agent的交互协议
 
-#### 5.5.1 交互模式
+#### 5.5.1 交互模式（Phase 2）
 
 | 交互方向 | 协议类型 | 触发时机 | 数据内容 | 超时 |
 |----------|----------|----------|----------|------|
 | CodeAgent → KBAgent | 同步Tool调用 | 代码分析前 | 查询相似问题和历史修复 | 30s |
-| TestAgent → KBAgent | 异步Tool调用 | 测试失败时 | 查询相似失败模式 | 30s |
 | AnalysisAgent → KBAgent | 同步Tool调用 | 根因分析时 | 查询历史根因和修复建议 | 60s |
 | 状态机 → KBAgent | 节点执行 | 任务完成后 | 沉淀知识单元 | 120s |
 
-#### 5.5.2 数据契约
+> **注**：TestAgent → KBAgent 在Phase 2中暂不实现。
+
+#### 5.5.2 数据契约（Phase 2简化版）
 
 ```python
 @dataclass
 class KnowledgeRetrievalRequest:
-    """知识检索请求"""
+    """知识检索请求（Phase 2）"""
     query: str
-    agent_type: str  # "CodeAgent" / "TestAgent" / "AnalysisAgent"
-    task_context: Dict[str, Any]
-    filters: RetrievalFilters
-    priority: int = 0  # 0=普通, 1=高优先级
+    product_line: Optional[str] = None
+    tags: List[str] = None
+    max_results: int = 10
 
 @dataclass
 class KnowledgeRetrievalResponse:
-    """知识检索响应"""
+    """知识检索响应（Phase 2）"""
     knowledge_units: List[KnowledgeUnit]
     total_count: int
     retrieval_time_ms: float
-    warnings: List[str] = field(default_factory=list)
-
-@dataclass
-class KnowledgeCaptureRequest:
-    """知识沉淀请求"""
-    iteration_data: IterationData
-    capture_type: CaptureType  # "auto" / "manual"
-    priority: int = 0
-    verification_required: bool = True
 ```
 
-#### 5.5.3 错误处理
+#### 5.5.3 错误处理（Phase 2）
 
 | 错误类型 | 处理策略 | 降级方案 |
 |----------|----------|----------|
-| 向量数据库连接失败 | 重试3次，间隔1s | 返回空列表，记录错误日志 |
+| 向量数据库连接失败 | 重试1次，间隔1s | 返回空列表，记录错误日志 |
 | 检索超时 | 超时控制30s | 返回部分结果+警告 |
-| 向量化失败 | 回退到TF-IDF | 使用关键词检索替代 |
-| 存储失败 | 重试+回滚 | 异步重试队列 |
+| 向量化失败 | 返回空列表 | 记录错误日志 |
+| 存储失败 | 重试1次 | 记录错误日志，跳过知识沉淀 |
 
-### 5.6 KBAgent配置管理
+### 5.6 KBAgent配置管理（Phase 2）
 
 ```python
 @dataclass
 class KBAgentConfig:
-    """KBAgent配置"""
+    """KBAgent配置（Phase 2）"""
     # 向量数据库配置
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
     collection_name: str = "firmware_knowledge"
     
-    # 关系数据库配置
+    # Embedding配置
+    embedding_model: str = "text-embedding-ada-002"
+    embedding_dim: int = 1536
+    
+    # 检索配置
+    default_max_results: int = 10
+    min_confidence_score: float = 0.5
+```
     postgres_url: str = "postgresql://localhost/firmware_kb"
     
     # Embedding配置

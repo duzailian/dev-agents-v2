@@ -201,11 +201,15 @@
    - **风险**：`src/agents/` 现有脚手架较为简单，开发时容易偏离 `DETAILED_DESIGN_V2.md` 定义的详尽接口。
    - **措施**：在 Task 2-1 启动时，必须严格照搬设计文档中的类图（如 `CodeAnalyzer`）和接口定义生成代码，禁止随意简化。
 
-2. **LangGraph 集成优先验证**
+2. **安全过滤器集成** (新增)
+   - **风险**：`SecretFilter` 类已实现但在 `BaseAgent` 或日志系统中未被显式调用，可能导致敏感信息泄露。
+   - **措施**：在 Phase 2 开发中，将 `SecretFilter` 集成到全局日志配置中，确保所有输出经过脱敏处理。
+
+3. **LangGraph 集成优先验证**
    - **风险**：LangGraph 的状态持久化（Checkpointing）和人工介入（Human-in-the-loop）机制较复杂。
    - **措施**：将 **Task 2-0-1 (LangGraph POC)** 列为最高优先级。若验证失败，需立即调整 `STATE_MACHINE.md`。
 
-3. **文档与代码同步更新**
+4. **文档与代码同步更新**
    - **风险**：开发进度快于文档更新，导致文档再次过时。
    - **措施**：执行"文档驱动开发"（Documentation Driven Development），代码变更需同步更新 `API_SPEC.md` 和 `DETAILED_DESIGN_V2.md`。
 

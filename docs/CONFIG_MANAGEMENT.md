@@ -2406,4 +2406,309 @@ aft config test-interpolation
 
 ---
 
+## 9. 配置验证规则
+
+### 9.1 验证规则概述
+
+系统支持多种配置验证规则，确保配置的正确性和完整性。
+
+**验证类型**：
+
+| 类型 | 说明 | 示例 |
+|------|------|------|
+| 类型检查 | 验证配置值的类型 | timeout必须是整数 |
+| 范围检查 | 验证数值在有效范围内 | timeout > 0 且 <= 3600 |
+| 必填检查 | 验证必填字段已设置 | app.name不能为空 |
+| 依赖检查 | 验证配置间的依赖关系 | 如果启用BMC，则必须设置BMC密码 |
+| 格式检查 | 验证字符串格式 | URL必须是有效格式 |
+| 唯一性检查 | 验证值的唯一性 | 任务ID不能重复 |
+
+### 9.2 验证规则定义
+
+```python
+from typing import Any, Dict, List, Optional, Callable
+from dataclasses import dataclass, field
+from enum import Enum
+import re
+
+
+class ValidationType(Enum):
+    """验证类型枚举"""
+    TYPE = "type"
+    RANGE = "range"
+    REQUIRED = "required"
+    DEPENDENCY = "dependency"
+    FORMAT = "format"
+    UNIQUE = "unique"
+    CUSTOM = "custom"
+
+
+@dataclass
+class ValidationRule:
+    """配置验证规则"""
+    field_path: str  # 字段路径，如 "execution.timeout"
+    validation_type: ValidationType
+    message: str  # 验证失败时的错误信息
+    severity: str = "error"  # error, warning, info
+    
+    # 类型验证参数
+    expected_type: Optional[type] = None
+    
+    # 范围验证参数
+    min_value: Optional[Any] = None
+    max_value: Optional[Any] = None
+    
+    # 格式验证参数
+    pattern: Optional[str] = None
+    regex: Optional[re.Pattern] = None
+    
+    # 必填验证参数
+    required: Optional[bool] = None
+    
+    # 依赖验证参数
+    depends_on: Optional[str] = None  # 依赖的字段路径
+    condition: Optional[Callable[[Any, Any], bool]] = None  # 依赖条件
+    
+    # 自定义验证参数
+    custom_validator: Optional[Callable[[Any], bool]] = None
+    custom_message: Optional[str] = None
+
+
+class ConfigValidator:
+    """配置验证器"""
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.errors: List[str] = []
+        self.warnings: List[str] = []
+        self.rules: List[ValidationRule] = []
+    
+    def add_rule(self, rule: ValidationRule) -> "ConfigValidator":
+        """添加验证规则"""
+        self.rules.append(rule)
+        return self
+    
+    def validate(self) -> bool:
+        """
+        执行所有验证规则
+        
+        Returns:
+            是否所有验证都通过
+        """
+        self.errors = []
+        self.warnings = []
+        
+        for rule in self.rules:
+            try:
+                self._validate_rule(rule)
+            except Exception as e:
+                self.errors.append(f"Validation error for {rule.field_path}: {e}")
+        
+        return len(self.errors) == 0
+    
+    def _validate_rule(self, rule: ValidationRule) -> None:
+        """验证单个规则"""
+        value = self._get_nested_value(self.config, rule.field_path)
+        
+        if rule.validation_type == ValidationType.REQUIRED:
+            if rule.required and value is None:
+                self.errors.append(f"[{rule.severity}] {rule.field_path}: {rule.message}")
+        
+        elif rule.validation_type == ValidationType.TYPE:
+            if value is not None and rule.expected_type:
+                if not isinstance(value, rule.expected_type):
+                    self.errors.append(
+                        f"[{rule.severity}] {rule.field_path}: "
+                        f"expected {rule.expected_type.__name__}, got {type(value).__name__}"
+                    )
+        
+        elif rule.validation_type == ValidationType.RANGE:
+            if value is not None:
+                if rule.min_value is not None and value < rule.min_value:
+                    self.errors.append(
+                        f"[{rule.severity}] {rule.field_path}: "
+                        f"value {value} is less than minimum {rule.min_value}"
+                    )
+                if rule.max_value is not None and value > rule.max_value:
+                    self.errors.append(
+                        f"[{rule.severity}] {rule.field_path}: "
+                        f"value {value} exceeds maximum {rule.max_value}"
+                    )
+        
+        elif rule.validation_type == ValidationType.FORMAT:
+            if value is not None and rule.regex:
+                if not rule.regex.match(str(value)):
+                    self.errors.append(f"[{rule.severity}] {rule.field_path}: {rule.message}")
+        
+        elif rule.validation_type == ValidationType.DEPENDENCY:
+            if rule.depends_on and rule.condition:
+                dep_value = self._get_nested_value(self.config, rule.depends_on)
+                if dep_value is not None:
+                    if not rule.condition(dep_value, value):
+                        self.errors.append(f"[{rule.severity}] {rule.field_path}: {rule.message}")
+        
+        elif rule.validation_type == ValidationType.CUSTOM:
+            if rule.custom_validator and value is not None:
+                if not rule.custom_validator(value):
+                    msg = rule.custom_message or rule.message
+                    self.errors.append(f"[{rule.severity}] {rule.field_path}: {msg}")
+    
+    def _get_nested_value(self, obj: Any, path: str) -> Any:
+        """获取嵌套字典的值"""
+        keys = path.split('.')
+        value = obj
+        for key in keys:
+            if isinstance(value, dict):
+                value = value.get(key)
+            else:
+                return None
+        return value
+```
+
+### 9.3 预定义验证规则
+
+系统提供预定义的验证规则配置：
+
+```python
+from src.config.validation_rules import (
+    get_app_validation_rules,
+    get_database_validation_rules,
+    get_agent_validation_rules,
+    get_execution_validation_rules,
+)
+
+
+# 应用配置验证规则
+app_rules = get_app_validation_rules()
+validator = ConfigValidator(config)
+validator.rules.extend(app_rules)
+
+# 数据库配置验证规则
+db_rules = get_database_validation_rules()
+validator.rules.extend(db_rules)
+
+# Agent配置验证规则
+agent_rules = get_agent_validation_rules()
+validator.rules.extend(agent_rules)
+
+# 执行配置验证规则
+exec_rules = get_execution_validation_rules()
+validator.rules.extend(exec_rules)
+
+# 执行验证
+if validator.validate():
+    print("✅ 配置验证通过")
+else:
+    print("❌ 配置验证失败:")
+    for error in validator.errors:
+        print(f"  - {error}")
+```
+
+### 9.4 验证规则配置文件
+
+验证规则也可以通过YAML配置定义：
+
+```yaml
+# config/validation_rules.yaml
+rules:
+  - field: "app.name"
+    type: "required"
+    message: "应用名称不能为空"
+    severity: "error"
+  
+  - field: "execution.timeout"
+    type: "range"
+    min: 1
+    max: 3600
+    message: "超时时间必须在1-3600秒之间"
+    severity: "error"
+  
+  - field: "execution.retries"
+    type: "range"
+    min: 0
+    max: 10
+    message: "重试次数必须在0-10之间"
+    severity: "warning"
+  
+  - field: "database.postgres.url"
+    type: "format"
+    pattern: "^postgresql://.*"
+    message: "PostgreSQL URL必须以postgresql://开头"
+    severity: "error"
+  
+  - field: "model.openai.api_key"
+    type: "required"
+    message: "OpenAI API密钥必须设置"
+    severity: "error"
+  
+  - field: "environments.bmc.enabled"
+    type: "dependency"
+    depends_on: "environments.bmc.network.password"
+    condition: "lambda enabled, pwd: not enabled or (pwd and len(pwd) > 0)"
+    message: "如果启用BMC，必须设置BMC密码"
+    severity: "error"
+  
+  - field: "agents.code_agent.model.temperature"
+    type: "range"
+    min: 0.0
+    max: 2.0
+    message: "temperature必须在0.0-2.0之间"
+    severity: "warning"
+```
+
+### 9.5 验证结果处理
+
+```python
+class ValidationResult:
+    """验证结果"""
+    
+    def __init__(self, is_valid: bool, errors: List[str], warnings: List[str]):
+        self.is_valid = is_valid
+        self.errors = errors
+        self.warnings = warnings
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "valid": self.is_valid,
+            "errors": self.errors,
+            "warnings": self.warnings
+        }
+    
+    def __str__(self) -> str:
+        if self.is_valid:
+            return "✅ 配置验证通过"
+        
+        lines = ["❌ 配置验证失败:"]
+        for error in self.errors:
+            lines.append(f"  🔴 ERROR: {error}")
+        for warning in self.warnings:
+            lines.append(f"  🟡 WARNING: {warning}")
+        return "\n".join(lines)
+
+
+def validate_config(config: Dict[str, Any], rules: List[ValidationRule]) -> ValidationResult:
+    """
+    验证配置
+    
+    Args:
+        config: 配置字典
+        rules: 验证规则列表
+    
+    Returns:
+        验证结果
+    """
+    validator = ConfigValidator(config)
+    validator.rules.extend(rules)
+    
+    is_valid = validator.validate()
+    
+    return ValidationResult(
+        is_valid=is_valid,
+        errors=validator.errors,
+        warnings=validator.warnings
+    )
+```
+
+---
+
 *本文档将随着系统的发展和需求的变化持续更新维护。*
