@@ -230,3 +230,71 @@ int main() { return add(1, 2); }
     if result.file_analyses:
         func_count = result.file_analyses[0].metrics.function_count
         assert func_count == 3
+
+
+@pytest.mark.asyncio
+async def test_cyclomatic_complexity_metrics(tmp_path, analyzer_config):
+    """Test AST-based cyclomatic complexity calculation."""
+    # This code has a known complexity of 11
+    # See manual calculation in comments
+    code = """
+#include <stdio.h>
+
+// Complexity contributions:
+// if (a > 0): +1
+// if (b > 0): +1
+// for loop: +1
+void complex_function(int a, int b) {
+    if (a > 0) {
+        if (b > 0) {
+            printf("Both positive\\n");
+        } else {
+            printf("A positive, B non-positive\\n");
+        }
+    }
+    for (int i = 0; i < 10; i++) {
+        printf("%d\\n", i);
+    }
+}
+
+// Complexity contributions:
+// while: +1
+// &&: +1
+// ||: +1
+void logic_function(int x, int y, int z) {
+    while (x > 0 && (y > 0 || z > 0)) {
+        x--;
+    }
+}
+
+// Complexity contributions:
+// case 1: +1
+// case 2: +1
+// case 3: +1
+// default (parsed as case_statement): +1
+void switch_function(int opt) {
+    switch (opt) {
+        case 1: break;
+        case 2: break;
+        case 3: break;
+        default: break;
+    }
+}
+// Total Decision Points = 3 + 3 + 4 = 10
+// Cyclomatic Complexity = 1 + Decision Points = 11
+"""
+    test_file = tmp_path / "complexity.c"
+    test_file.write_text(code)
+
+    analyzer = CodeAnalyzer(analyzer_config)
+    result = await analyzer.analyze_file(str(test_file))
+
+    assert len(result.file_analyses) == 1
+    metrics = result.file_analyses[0].metrics
+
+    # Check total complexity
+    assert metrics.cyclomatic_complexity == 11
+
+    # Also verify other metrics to ensure parser is working reasonably
+    assert metrics.function_count == 3
+    assert metrics.lines_of_code > 0

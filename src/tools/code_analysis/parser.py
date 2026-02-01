@@ -44,11 +44,13 @@ class TreeSitterParser:
         self.lang_name = self.LANGUAGE_MAP.get(language.lower())
 
         if self.lang_name == "c":
-            self.language = Language(tsc.language(), 'c')
-            self.parser = Parser(self.language)
+            self.language = Language(tsc.language(), "c")
+            self.parser = Parser()
+            self.parser.set_language(self.language)
         elif self.lang_name == "cpp":
-            self.language = Language(tscpp.language(), 'cpp')
-            self.parser = Parser(self.language)
+            self.language = Language(tscpp.language(), "cpp")
+            self.parser = Parser()
+            self.parser.set_language(self.language)
         else:
             raise ValueError(f"Unsupported language: {language}")
 
@@ -107,7 +109,7 @@ class TreeSitterParser:
             List[FunctionNode]: Extracted functions
         """
         tree = self.parse(code)
-        query = Query(self.language, self.FUNCTION_QUERY)
+        query = self.language.query(self.FUNCTION_QUERY)
         matches = query.matches(tree.root_node)
 
         functions = []
@@ -177,7 +179,7 @@ class TreeSitterParser:
             List of dicts with 'callee', 'args', 'location'
         """
         tree = self.parse(code)
-        query = Query(self.language, self.CALL_QUERY)
+        query = self.language.query(self.CALL_QUERY)
         matches = query.matches(tree.root_node)
 
         calls = []

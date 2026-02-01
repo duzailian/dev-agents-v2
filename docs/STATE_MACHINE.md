@@ -1,9 +1,11 @@
 # AI驱动固件智能测试系统：状态机设计（State Machine）
 
-> 文档版本：v2.0
+> 文档版本：v2.1
 >
 > 本文定义"AI修改代码 → 启动测试 → 收集结果 → 分析决策 → 继续或收敛退出"的核心控制流。
 > 面向 Phase 1：架构设计与需求分析阶段输出；实现时可用 LangGraph（推荐）或自研状态机执行。
+>
+> **重要说明**：状态机实现使用 snake_case 命名约定（如 `code_analysis`、`test_execution`），与本设计文档中的 UPPER_SNAKE_CASE 命名（如 `CODE_ANALYSIS`、`TEST_RUN`）对应。请参考 `src/orchestrator/graph.py` 获取实际实现的节点名称。
 
 ---
 
@@ -98,6 +100,30 @@
 | `SUCCESS` | 目标达成并输出报告 | 所有产物 | 最终报告/入库 | `IDLE` |
 | `FAILURE` | 失败退出（不可恢复或超过上限） | 失败原因 | 失败报告/入库 | `IDLE` |
 | `ABORTED` | 外部中止（人工/超时/策略） | 中止原因 | 中止报告 | `IDLE` |
+
+### 3.3 命名约定与实现映射
+
+LangGraph 实现使用 **snake_case** 命名约定。以下是设计文档状态名与实现节点名的映射关系：
+
+| 设计文档（UPPER_SNAKE_CASE） | 实现节点（snake_case） | 说明 |
+|---|---|---|
+| `INIT` | `initialize` | 初始化节点 |
+| `CODE_ANALYSIS` | `code_analysis` | 代码分析节点 |
+| `PATCH_GENERATION` | `patch_generation` | 补丁生成节点 |
+| `PATCH_APPLY` | `patch_application` | 补丁应用节点 |
+| `BUILD_SETUP` | `build_setup` | 构建准备节点 |
+| `BUILD_RUN` | `build_run` | 构建执行节点 |
+| `TEST_SETUP` | `test_setup` | 测试准备节点 |
+| `TEST_RUN` | `test_execution` | 测试执行节点 |
+| `RESULT_COLLECTION` | `result_collection` | 结果采集节点 |
+| `RESULT_ANALYSIS` | `result_analysis` | 结果分析节点 |
+| `CONVERGENCE_CHECK` | `convergence_check` | 收敛检查节点 |
+| `ERROR_RECOVERY` | `error_recovery` | 错误恢复节点 |
+| `SUCCESS` | `success` | 成功终止节点 |
+| `FAILURE` | `failure` | 失败终止节点 |
+| `ABORTED` | `escalate` | 升级/人工介入节点 |
+| - | `knowledge_retrieval` | 知识检索节点（设计文档未覆盖） |
+| - | `knowledge_capture` | 知识沉淀节点（设计文档未覆盖） |
 
 ### 3.2 常用子状态（实现可选）
 

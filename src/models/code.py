@@ -4,6 +4,77 @@ from typing import List, Dict, Optional, Any
 from datetime import datetime
 import uuid
 
+
+class WorkflowAction(Enum):
+    """工作流动作枚举 - 标准化 next_action 字段的可能值
+
+    用于确保状态机中 next_action 字段的一致性和类型安全。
+    与 STATE_MACHINE.md 中定义的状态转移规则对应。
+    """
+    # 分析阶段动作
+    ANALYZE = "analyze"              # 分析代码/日志/错误
+    GENERATE_PATCH = "generate_patch"  # 生成补丁
+
+    # 继续控制动作
+    CONTINUE = "continue"            # 继续下一次迭代
+    FINISH = "finish"                # 任务成功完成
+    FAILURE = "failure"              # 任务失败终止
+    ESCALATE = "escalate"            # 升级/人工介入
+
+    # 补丁相关动作
+    REVIEW_PATCH = "review_patch"    # 审查生成的补丁
+    APPLY_PATCH = "apply_patch"      # 应用补丁
+
+    # 恢复动作
+    RETRY = "retry"                  # 重试当前操作
+    ROLLBACK = "rollback"            # 回滚更改
+
+    # 测试动作
+    RUN_TEST = "run_test"            # 执行测试
+    SETUP_ENV = "setup_env"          # 设置测试环境
+
+    # 知识库动作
+    RETRIEVE_KNOWLEDGE = "retrieve_knowledge"  # 检索知识库
+    CAPTURE_KNOWLEDGE = "capture_knowledge"    # 沉淀知识
+
+
+class WorkflowState(Enum):
+    """工作流状态枚举 - LangGraph 节点名称的标准化
+
+    用于编译时验证状态机节点名称的正确性。
+    值对应 src/orchestrator/graph.py 中定义的节点名称。
+
+    与 STATE_MACHINE.md 中的 UPPER_SNAKE_CASE 状态名对应：
+    - snake_case: code_analysis (本枚举)
+    - UPPER_SNAKE_CASE: CODE_ANALYSIS (设计文档)
+    """
+
+    # 核心流程状态
+    INITIALIZE = "initialize"              # 初始化
+    CODE_ANALYSIS = "code_analysis"        # 代码分析
+    PATCH_GENERATION = "patch_generation"  # 补丁生成
+    PATCH_APPLICATION = "patch_application"  # 补丁应用
+    BUILD_SETUP = "build_setup"            # 构建准备
+    BUILD_RUN = "build_run"                # 构建执行
+    TEST_SETUP = "test_setup"              # 测试准备
+    TEST_EXECUTION = "test_execution"      # 测试执行
+    RESULT_COLLECTION = "result_collection"  # 结果采集
+    RESULT_ANALYSIS = "result_analysis"    # 结果分析
+    CONVERGENCE_CHECK = "convergence_check"  # 收敛检查
+
+    # 知识库状态
+    KNOWLEDGE_RETRIEVAL = "knowledge_retrieval"  # 知识检索
+    KNOWLEDGE_CAPTURE = "knowledge_capture"      # 知识沉淀
+
+    # 错误恢复
+    ERROR_RECOVERY = "error_recovery"      # 错误恢复
+
+    # 终止状态
+    SUCCESS = "success"                    # 成功完成
+    FAILURE = "failure"                    # 失败终止
+    ESCALATE = "escalate"                  # 升级/人工介入
+
+
 class AnalysisType(Enum):
     """分析类型枚举"""
     STRUCTURE = "structure"      # 结构分析

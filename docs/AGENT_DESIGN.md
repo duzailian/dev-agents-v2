@@ -75,7 +75,7 @@ class AgentState(TypedDict):
     # 代码上下文
     repo_path: str
     current_commit: str
-    patch_file: str
+    patch_content: str
 
     # 测试上下文
     test_plan: Dict[str, Any]
@@ -157,7 +157,7 @@ class CodeAgent:
 
         # 此时只生成不应用，等待人工确认或下一步
         return {
-            "patch_file": patch,
+            "patch_content": patch,
             "next_action": "review_patch"
         }
 ```

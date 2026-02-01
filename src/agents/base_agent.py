@@ -5,39 +5,50 @@ Abstract base class for all agents in the system.
 Agents are nodes in the LangGraph state machine, receiving state and returning updated state.
 """
 
-from typing import TypedDict, List, Dict, Any, Optional
+from typing import TypedDict, List, Dict, Any, Optional, Union, cast
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import logging
+
+from src.models.code import WorkflowAction
 
 logger = logging.getLogger(__name__)
 
 
 class AgentState(TypedDict):
-    """全局共享状态定义 - LangGraph状态机的核心数据结构"""
-    
+    """全局共享状态定义 - LangGraph状态机的核心数据结构
+
+    状态字段遵循 STATE_MACHINE.md 设计规范，确保设计文档与实现的一致性。
+    """
+
     # 任务标识
     task_id: str
     iteration: int
     max_iterations: int
-    
+    goal: str  # 目标定义（例如"所有目标用例通过 + 无新增告警"）
+
     # 代码上下文
     repo_path: str
     current_commit: str
     target_files: List[str]
     patch_content: str
     patch_applied: bool
-    
+    repo_snapshot: Dict[str, Any]  # 当前 commit/patch 信息，用于回滚
+
     # 测试上下文
     test_plan: Dict[str, Any]
     test_results: List[Dict[str, Any]]
     artifacts: List[str]
-    
+
     # 分析结果
     analysis_report: Dict[str, Any]
-    next_action: str
+    next_action: Union[str, WorkflowAction]  # 使用 WorkflowAction 枚举标准化
     converged: bool
-    
+
+    # 错误与恢复
+    error_state: Optional[Dict[str, Any]]  # 最近一次错误分类与恢复尝试次数
+    decision_trace: List[Dict[str, Any]]  # 状态转移链路及原因（可用于审计与回放）
+
     # 错误与消息
     messages: List[str]
     errors: List[str]
@@ -116,17 +127,21 @@ class BaseAgent(ABC):
                 "task_id": state.get("task_id", ""),
                 "iteration": state.get("iteration", 0),
                 "max_iterations": state.get("max_iterations", 10),
+                "goal": state.get("goal", ""),
                 "repo_path": state.get("repo_path", ""),
                 "current_commit": state.get("current_commit", ""),
                 "target_files": state.get("target_files", []),
                 "patch_content": state.get("patch_content", ""),
                 "patch_applied": state.get("patch_applied", False),
+                "repo_snapshot": state.get("repo_snapshot", {}),
                 "test_plan": state.get("test_plan", {}),
                 "test_results": state.get("test_results", []),
                 "artifacts": state.get("artifacts", []),
                 "analysis_report": state.get("analysis_report", {}),
                 "next_action": "escalate",
                 "converged": False,
+                "error_state": state.get("error_state"),
+                "decision_trace": state.get("decision_trace", []),
                 "messages": state.get("messages", []),
                 "errors": errors
             }
